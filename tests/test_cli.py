@@ -20,7 +20,6 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["init-usb", "/mnt/usb"],
         ["sync", "--dry-run", "--only", "git"],
         ["status"],
         ["relay"],

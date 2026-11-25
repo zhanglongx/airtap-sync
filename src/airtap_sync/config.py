@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 Side = Literal["A", "B"]
+SIDES: tuple[Side, Side] = ("A", "B")
 
 KiB = 1024
 MiB = 1024**2

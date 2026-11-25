@@ -16,6 +16,7 @@ from pathlib import Path
 from airtap_sync import __version__, paths
 from airtap_sync.config import Config, ConfigError, load_config
 from airtap_sync.logs import setup_logging
+from airtap_sync.medium.volume import VolumeError, init_volume
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -54,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("init-usb", "初始化 U 盘，生成 volume.toml 和 pair_id", "M1")
     p.add_argument("path", type=Path, help="U 盘根目录")
+    p.add_argument("--pair-id", help="沿用已有的 pair_id（U 盘丢失后重新初始化时使用）")
+    p.set_defaults(handler=_init_usb)
 
     p = add("sync", "执行一次同步", "M2")
     p.add_argument("--usb", type=Path, metavar="PATH", help="U 盘路径（默认自动检测）")
@@ -92,6 +95,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("autostart", "管理开机自启", "M5")
     p.add_argument("action", choices=["enable", "disable"])
     return parser
+
+
+def _init_usb(args: argparse.Namespace) -> int:
+    try:
+        volume = init_volume(args.path, args.pair_id)
+    except VolumeError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"U 盘已初始化：{volume.dir}")
+    print(f'pair_id = "{volume.pair_id}"')
+    print("请把这个 pair_id 写入 A、B 两台电脑的 config.toml。")
+    return EXIT_OK
 
 
 def _not_implemented(command: str, milestone: str) -> Handler:
