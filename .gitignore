@@ -217,4 +217,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+projects.csv
+
 AGENTS.md
+
+docs/development-plan.md
