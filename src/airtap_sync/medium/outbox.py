@@ -160,23 +160,40 @@ class OutboxWriter:
     exception leaves the outbox invalid (and therefore ignored by the peer).
     """
 
-    def __init__(self, outbox_dir: Path, side: Side) -> None:
+    def __init__(
+        self, outbox_dir: Path, side: Side, retain: tuple[str, ...] = ()
+    ) -> None:
         self.dir = outbox_dir
         self.side = side
+        self.retain = retain
         self._manifests: dict[str, ManifestEntry] = {}
+        self._previous: dict[str, ManifestEntry] = {}
         self._seq = 0
         self._begun = False
         self.commit_info: Commit | None = None
 
-    def begin(self) -> None:
-        """Invalidate the previous commit before touching any content."""
+    def begin(self, retain: tuple[str, ...] = ()) -> None:
+        """Invalidate the previous commit before touching any content.
+
+        Manifests of the previous commit whose path starts with one of the
+        ``retain`` prefixes stay listed (their files are left alone), for a run
+        that only rewrites part of the outbox.
+        """
         self.dir.mkdir(parents=True, exist_ok=True)
         commit_file = self.dir / COMMIT_FILENAME
+        kept: dict[str, ManifestEntry] = {}
+        self._previous = {}
         with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
-            self._seq = int(json.loads(commit_file.read_text(encoding="utf-8"))["seq"])
+            old = json.loads(commit_file.read_text(encoding="utf-8"))
+            self._seq = int(old["seq"])
+            for rel, m in dict(old["manifests"]).items():
+                entry = ManifestEntry(int(m["size"]), str(m["sha256"]))
+                self._previous[str(rel)] = entry
+                if retain and str(rel).startswith(retain):
+                    kept[str(rel)] = entry
         with contextlib.suppress(FileNotFoundError):
             commit_file.unlink()
-        self._manifests = {}
+        self._manifests = kept
         self._begun = True
 
     def write_manifest(self, rel: str, data: bytes) -> ManifestEntry:
@@ -186,6 +203,15 @@ class OutboxWriter:
         entry = ManifestEntry(digest.size, digest.sha256)
         self._manifests[rel] = entry
         return entry
+
+    def keep_previous(self, rel: str) -> bool:
+        """Keep the previous commit's manifest ``rel`` as it is (if it had one)."""
+        self._require_begun()
+        entry = self._previous.get(rel)
+        if entry is None or not resolve_relpath(self.dir, rel).is_file():
+            return False
+        self._manifests[rel] = entry
+        return True
 
     def path(self, rel: str) -> Path:
         """Absolute path of a payload file (bundles, blobs) under the outbox."""
@@ -210,7 +236,7 @@ class OutboxWriter:
             raise RuntimeError("OutboxWriter.begin() has not been called")
 
     def __enter__(self) -> OutboxWriter:
-        self.begin()
+        self.begin(self.retain)
         return self
 
     def __exit__(

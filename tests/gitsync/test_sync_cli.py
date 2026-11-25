@@ -9,7 +9,6 @@ from airtap_sync import paths
 from airtap_sync.cli import (
     EXIT_ATTENTION,
     EXIT_ERROR,
-    EXIT_NOT_IMPLEMENTED,
     EXIT_OK,
     main,
 )
@@ -103,8 +102,8 @@ def test_sync_creates_project_and_writes_reports(
     assert "新建 1" in out
     assert env.remote("B", "team/app").rev("main") == remote.rev("main")
 
-    usb_reports = sorted((env.usb / "airtap-sync" / "reports").glob("*-git.md"))
-    assert [p.name.split("-")[2] for p in usb_reports] == ["A", "B"]
+    usb_reports = sorted((env.usb / "airtap-sync" / "reports").glob("*.md"))
+    assert [p.stem.split("-")[2] for p in usb_reports] == ["A", "B"]
     local_reports = list((env.tmp_path / "logs-B" / "reports").glob("*.md"))
     assert len(local_reports) == 1
     assert "team/app" in local_reports[0].read_text(encoding="utf-8")
@@ -173,6 +172,50 @@ def test_errors(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
     assert env.run("A", "sync", "--usb", str(other)) == EXIT_ERROR
     assert "pair_id" in capsys.readouterr().err
 
-    assert env.run("A", "sync", "--usb", str(env.usb), "--only", "files") == (
-        EXIT_NOT_IMPLEMENTED
-    )
+    assert env.run("A", "sync", "--usb", str(env.usb), "--only", "files") == EXIT_ERROR
+    assert "folders" in capsys.readouterr().err
+
+
+def test_files_and_git_are_synchronised_in_one_run(
+    env: Env, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for side in "AB":
+        data = env.tmp_path / f"data-{side}"
+        data.mkdir()
+        with env.configs[side].open("a", encoding="utf-8") as f:
+            f.write(f'\n[folders.docs]\npath = "{data}"\n')
+    env.add_project("A", "team/app").commit("f", "1")
+    (env.tmp_path / "data-A" / "note.txt").write_text("hello", encoding="utf-8")
+
+    usb = str(env.usb)
+    for side in "ABAB":
+        assert env.run(side, "sync", "--usb", usb) in (EXIT_OK, EXIT_ATTENTION)
+    out = capsys.readouterr().out
+    assert "Git：" in out and "目录：" in out
+
+    assert (env.tmp_path / "data-B" / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert env.remote("B", "team/app").rev("main")
+    commit = (env.usb / "airtap-sync" / "outbox" / "B" / "commit.json").read_text()
+    assert "git/projects.json.gz" in commit and "files/docs.json.gz" in commit
+    report = sorted((env.usb / "airtap-sync" / "reports").glob("*-B.md"))[-1]
+    text = report.read_text(encoding="utf-8")
+    assert "## Git 同步" in text and "## 目录同步" in text
+
+
+def test_only_files_keeps_the_git_manifest(
+    env: Env,
+) -> None:
+    data = env.tmp_path / "data-A"
+    data.mkdir()
+    with env.configs["A"].open("a", encoding="utf-8") as f:
+        f.write(f'\n[folders.docs]\npath = "{data}"\n')
+    env.add_project("A", "team/app").commit("f", "1")
+    usb = str(env.usb)
+    assert env.run("A", "sync", "--usb", usb) in (EXIT_OK, EXIT_ATTENTION)
+    commit = env.usb / "airtap-sync" / "outbox" / "A" / "commit.json"
+    assert "git/projects.json.gz" in commit.read_text()
+
+    (data / "x.txt").write_text("x", encoding="utf-8")
+    assert env.run("A", "sync", "--usb", usb, "--only", "files") == EXIT_OK
+    text = commit.read_text()
+    assert "git/projects.json.gz" in text and "files/docs.json.gz" in text

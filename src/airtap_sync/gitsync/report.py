@@ -87,10 +87,12 @@ def write_report(report: GitSyncReport, directories: list[Path]) -> list[Path]:
     return written
 
 
-def _section(title: str, items: list[str], limit: int = 200) -> list[str]:
+def _section(
+    title: str, items: list[str], limit: int = 200, level: str = "##"
+) -> list[str]:
     if not items:
         return []
-    lines = [f"## {title}（{len(items)}）", ""]
+    lines = [f"{level} {title}（{len(items)}）", ""]
     lines += [f"- {item}" for item in items[:limit]]
     if len(items) > limit:
         lines.append(f"- …另有 {len(items) - limit} 项，详见日志")
@@ -106,31 +108,42 @@ def _size(n: int) -> str:
     raise AssertionError("unreachable")
 
 
-def render_markdown(report: GitSyncReport, now: datetime | None = None) -> str:
-    stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S UTC")
-    title = "Git 同步报告（试运行）" if report.dry_run else "Git 同步报告"
-    lines = [f"# {title}", "", f"- 端：{report.side}", f"- 时间：{stamp}"]
-    lines += [f"- 概要：{report.summary()}", ""]
-    lines += _section("需要人工处理：冲突", report.conflicts)
-    lines += _section("需要人工确认：删除分支或 tag", report.pending_deletes)
-    lines += _section("需要人工确认：新建工程", report.pending_creates)
-    lines += _section("失败", report.failures)
-    lines += _section("工程变化（未自动处理）", report.notes)
-    lines += _section("警告", report.warnings)
-    lines += _section("新建的工程", report.created)
-    lines += _section("已更新的工程", report.updated)
-    lines += _section("已删除的分支或 tag", report.refs_deleted)
-    lines += _section("等待数据（下一轮继续）", report.deferred)
+def body_lines(report: GitSyncReport, level: str = "##") -> list[str]:
+    """The sections of a report (headings at ``level``), without the title."""
+
+    def section(title: str, items: list[str]) -> list[str]:
+        return _section(title, items, level=level)
+
+    lines: list[str] = []
+    lines += section("需要人工处理：冲突", report.conflicts)
+    lines += section("需要人工确认：删除分支或 tag", report.pending_deletes)
+    lines += section("需要人工确认：新建工程", report.pending_creates)
+    lines += section("失败", report.failures)
+    lines += section("工程变化（未自动处理）", report.notes)
+    lines += section("警告", report.warnings)
+    lines += section("新建的工程", report.created)
+    lines += section("已更新的工程", report.updated)
+    lines += section("已删除的分支或 tag", report.refs_deleted)
+    lines += section("等待数据（下一轮继续）", report.deferred)
     exported = [
         f"{b.path}：{_size(b.size)}，{'完整' if b.complete else '未传完'}"
         f"{'，全量' if b.full else ''}"
         for b in report.exported
     ]
-    lines += _section("导出到 U 盘的 bundle", exported)
-    lines += _section("本轮未发送（空间不足或待确认）", report.unsent)
+    lines += section("导出到 U 盘的 bundle", exported)
+    lines += section("本轮未发送（空间不足或待确认）", report.unsent)
     lines += [
         f"U 盘空间：本轮写入 {_size(report.budget_spent)}，"
         f"剩余配额 {_size(report.budget_left)}",
         "",
     ]
+    return lines
+
+
+def render_markdown(report: GitSyncReport, now: datetime | None = None) -> str:
+    stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S UTC")
+    title = "Git 同步报告（试运行）" if report.dry_run else "Git 同步报告"
+    lines = [f"# {title}", "", f"- 端：{report.side}", f"- 时间：{stamp}"]
+    lines += [f"- 概要：{report.summary()}", ""]
+    lines += body_lines(report)
     return "\n".join(lines)

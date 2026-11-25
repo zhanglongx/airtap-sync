@@ -15,7 +15,6 @@ the next run.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -50,14 +49,10 @@ from airtap_sync.gitsync.projectsync import sync_project
 from airtap_sync.gitsync.refs import ActionKind, needs_import
 from airtap_sync.gitsync.refsync import export_bundle, read_local_refs
 from airtap_sync.gitsync.report import ExportedBundle, GitSyncReport
-from airtap_sync.gitsync.transport import (
-    GIT_MANIFEST,
-    RECEIVED,
-    Received,
-    blob_base,
-    bundle_base,
-)
+from airtap_sync.gitsync.transport import GIT_MANIFEST, bundle_base
 from airtap_sync.medium.atomicio import sha256_file
+from airtap_sync.medium.blobs import blob_base, drop_unwanted_blobs
+from airtap_sync.medium.feedback import RECEIVED, Received, load_feedback
 from airtap_sync.medium.outbox import (
     Commit,
     OutboxWriter,
@@ -94,14 +89,32 @@ def run_git_sync(
     options: GitSyncOptions | None = None,
     progress: ProgressCallback = null_progress,
 ) -> GitSyncReport:
-    """Run one Git sync on ``side`` against the drive ``volume``."""
-    run = _Run(
-        ctx, volume, side, transfer, staging, options or GitSyncOptions(), progress
-    )
-    return run.execute()
+    """Run one Git sync on ``side`` against the drive ``volume``.
+
+    Convenience for running Git alone; ``sync.run_sync`` combines it with the
+    directory sync and shares one outbox commit, budget and feedback.
+    """
+    options = options or GitSyncOptions()
+    run = GitSync(ctx, volume, side, transfer, staging, options, progress)
+    peer_dir, my_dir = run.peer_dir, run.my_dir
+    peer_commit = read_outbox(peer_dir, run.peer_side)
+    previous = read_outbox(my_dir, side)
+    feedback_in = load_feedback(peer_dir, peer_commit)
+    run.import_phase(peer_commit, feedback_in)
+    if options.dry_run:
+        return run.report
+    budget = usb_budget(volume.root, transfer)
+    with OutboxWriter(my_dir, side, retain=("files/",)) as out:
+        run.export_phase(out, budget, feedback_in, previous)
+        out.write_manifest(RECEIVED, run.feedback_out.to_bytes())
+        drop_unwanted_blobs(my_dir, run.wanted_blobs)
+    run.finish()
+    return run.report
 
 
-class _Run:
+class GitSync:
+    """One side's Git sync, in two phases around the (shared) outbox rewrite."""
+
     def __init__(
         self,
         ctx: GitContext,
@@ -111,6 +124,7 @@ class _Run:
         staging: Path,
         options: GitSyncOptions,
         progress: ProgressCallback,
+        feedback_out: Received | None = None,
     ) -> None:
         self.ctx = ctx
         self.volume = volume
@@ -132,18 +146,18 @@ class _Run:
         self.peer_dir = volume.outbox_dir(self.peer_side)
         now = options.now or datetime.now(UTC)
         self.stamp = now.strftime("%Y%m%dT%H%M%SZ")
-        self.feedback_out = Received()  # what we tell the peer
+        self.feedback_out = feedback_out or Received()  # what we tell the peer
+        self.peer: ProjectsManifest | None = None
+        self.wanted_blobs: set[str] = set()  # LFS objects the bundles still need
         self.local_records: dict[str, ProjectRecord] = {}
         self.local_projects: dict[str, Project] = {}
 
     # ----- driver --------------------------------------------------------------
 
-    def execute(self) -> GitSyncReport:
+    def import_phase(self, peer_commit: Commit | None, feedback_in: Received) -> None:
+        """Read both GitLabs' state and apply the peer's changes locally."""
         state = self.ctx.state
-        peer_commit = read_outbox(self.peer_dir, self.peer_side)
-        peer = self._load_peer_manifest(peer_commit)
-        feedback_in = self._load_feedback(peer_commit)
-
+        self.peer = peer = self._load_peer_manifest(peer_commit)
         self._read_local()
         base_projects = state.base_projects()
         if not base_projects and not state.known_keys():
@@ -153,6 +167,7 @@ class _Run:
             )
 
         plan = None
+        peer_records: dict[str, ProjectRecord] = {}
         if peer is not None:
             peer_records = self._peer_records(peer)
             plan = plan_projects(self.local_records, peer_records, base_projects)
@@ -169,11 +184,11 @@ class _Run:
                 elif d.action is ProjectAction.SKIP and d.note:
                     self.report.warnings.append(f"{d.path}：{d.note}")
         else:
-            self.report.warnings.append("尚未收到对方的数据，本轮只导出")
+            self.report.warnings.append("尚未收到对方的 Git 数据，本轮只导出")
 
         if self.options.dry_run:
             self._dry_run(plan, peer)
-            return self.report
+            return
 
         if peer is not None and plan is not None:
             self._import(plan.decisions, peer)
@@ -186,12 +201,23 @@ class _Run:
             for key in self.created:
                 new_base[key] = self.local_records[key].path
             state.set_base_projects(new_base)
-        self._export(peer, feedback_in)
+
+    def export_phase(
+        self,
+        writer: OutboxWriter,
+        budget: Budget,
+        feedback_in: Received,
+        previous: Commit | None,
+    ) -> None:
+        """Write the project manifest and the bundles the peer lacks."""
+        self._export(writer, budget, feedback_in, previous)
+        state = self.ctx.state
         ids = {p.id: p.full_path for p in self.local_projects.values()}
         state.set_local_ids({**ids, **self.new_local_ids})
-        self._cleanup_staging(peer)
+
+    def finish(self) -> None:
+        self._cleanup_staging(self.peer)
         self.progress(ProgressEvent(Stage.DONE, self.report.summary()))
-        return self.report
 
     # ----- reading -------------------------------------------------------------
 
@@ -205,11 +231,6 @@ class _Run:
             log.warning("peer git manifest unreadable: %s", e)
             return None
         return manifest if manifest.side == self.peer_side else None
-
-    def _load_feedback(self, commit: Commit | None) -> Received:
-        if commit is None or RECEIVED not in commit.manifests:
-            return Received()
-        return Received.load(resolve_relpath(self.peer_dir, RECEIVED))
 
     def _peer_records(self, peer: ProjectsManifest) -> dict[str, ProjectRecord]:
         flt = self.ctx.ref_filter
@@ -481,12 +502,18 @@ class _Run:
 
     # ----- export --------------------------------------------------------------
 
-    def _export(self, peer: ProjectsManifest | None, feedback_in: Received) -> None:
+    def _export(
+        self,
+        out: OutboxWriter,
+        budget: Budget,
+        feedback_in: Received,
+        previous_commit: Commit | None,
+    ) -> None:
+        peer = self.peer
         ctx = self.ctx
         state = ctx.state
-        budget = usb_budget(self.volume.root, self.transfer)
         base_projects = state.base_projects()
-        previous = self._previous_manifest()
+        previous = self._previous_manifest(previous_commit)
         wants_full = {k.lower() for k in feedback_in.needs_full}
 
         candidates: list[tuple[int, str, bool, str]] = []
@@ -519,39 +546,33 @@ class _Run:
 
         candidates.sort()
         bundles: dict[str, BundleInfo] = {}
-        with OutboxWriter(self.my_dir, self.side) as out:
-            for i, (_size, key, full, sig) in enumerate(candidates, 1):
-                rec = self.local_records[key]
-                if budget.remaining <= 0:
-                    kept = self._still_valid(key, rec, sig, previous)
-                    if kept is not None:
-                        bundles[key] = kept  # parts already on the drive stay
-                    else:
-                        self.report.unsent.append(rec.path)
-                    continue
-                self.progress(
-                    ProgressEvent(
-                        Stage.EXPORT, rec.path, i, len(candidates), "projects"
-                    )
-                )
-                info = self._export_one(
-                    key, rec, full, sig, previous, feedback_in, budget
-                )
-                if info is not None:
-                    bundles[key] = info
-            self._drop_stale_bundles(bundles)
+        for i, (_size, key, full, sig) in enumerate(candidates, 1):
+            rec = self.local_records[key]
+            if budget.remaining <= 0:
+                kept = self._still_valid(key, rec, sig, previous)
+                if kept is not None:
+                    bundles[key] = kept  # parts already on the drive stay
+                else:
+                    self.report.unsent.append(rec.path)
+                continue
+            self.progress(
+                ProgressEvent(Stage.EXPORT, rec.path, i, len(candidates), "projects")
+            )
+            info = self._export_one(key, rec, full, sig, previous, feedback_in, budget)
+            if info is not None:
+                bundles[key] = info
+        self._drop_stale_bundles(bundles)
 
-            records = {
-                k: (
-                    ProjectRecord(**{**r.to_dict(), "refs": self._refs_for(k, r)})
-                    if r.refs is not None
-                    else r
-                )
-                for k, r in self.local_records.items()
-            }
-            manifest = ProjectsManifest(self.side, records, bundles)
-            out.write_manifest(GIT_MANIFEST, dump_json_gz(manifest.to_json()))
-            out.write_manifest(RECEIVED, self.feedback_out.to_bytes())
+        records = {
+            k: (
+                ProjectRecord(**{**r.to_dict(), "refs": self._refs_for(k, r)})
+                if r.refs is not None
+                else r
+            )
+            for k, r in self.local_records.items()
+        }
+        manifest = ProjectsManifest(self.side, records, bundles)
+        out.write_manifest(GIT_MANIFEST, dump_json_gz(manifest.to_json()))
         self.report.budget_spent = budget.spent
         self.report.budget_left = budget.remaining
 
@@ -572,8 +593,7 @@ class _Run:
         local = self.outgoing / f"{repo_key(rec.path)}-{old.sha256}.bundle"
         return old if old.signature == signature and local.is_file() else None
 
-    def _previous_manifest(self) -> ProjectsManifest | None:
-        commit = read_outbox(self.my_dir, self.side)
+    def _previous_manifest(self, commit: Commit | None) -> ProjectsManifest | None:
         if commit is None or GIT_MANIFEST not in commit.manifests:
             return None
         try:
@@ -735,22 +755,10 @@ class _Run:
             for f in self.outgoing.iterdir():
                 if f.name not in keep:
                     f.unlink(missing_ok=True)
-        wanted_oids = {oid for info in current.values() for oid, _ in info.lfs}
-        self._drop_stale_blobs(wanted_oids)
-
-    def _drop_stale_blobs(self, wanted: set[str]) -> None:
-        """Remove LFS objects (on the drive and local copies) nobody needs now."""
-        root = self.my_dir / "blobs"
-        if root.is_dir():
-            for shard in root.iterdir():
-                for f in shard.iterdir():
-                    if f.name.split(".", 1)[0] not in wanted:
-                        f.unlink(missing_ok=True)
-                with contextlib.suppress(OSError):
-                    shard.rmdir()
+        self.wanted_blobs = {oid for info in current.values() for oid, _ in info.lfs}
         if self.outgoing_lfs.is_dir():
             for f in self.outgoing_lfs.iterdir():
-                if f.name not in wanted:
+                if f.name not in self.wanted_blobs:
                     f.unlink(missing_ok=True)
 
     # ----- housekeeping -------------------------------------------------------------

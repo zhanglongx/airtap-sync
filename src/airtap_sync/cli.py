@@ -28,16 +28,16 @@ from airtap_sync.gitsync.baseline import (
     adopt_baseline,
     take_snapshot,
 )
-from airtap_sync.gitsync.context import open_context
-from airtap_sync.gitsync.engine import GitSyncAborted, GitSyncOptions, run_git_sync
+from airtap_sync.gitsync.context import GitContext, open_context
+from airtap_sync.gitsync.engine import GitSyncAborted
 from airtap_sync.gitsync.gitcmd import GitError
-from airtap_sync.gitsync.report import GitSyncReport, write_report
 from airtap_sync.gitsync.scan import RemoteRefs
 from airtap_sync.gitsync.warm import warm_cache
 from airtap_sync.logs import setup_logging
 from airtap_sync.medium.outbox import FormatVersionError
 from airtap_sync.medium.volume import Volume, VolumeError, init_volume, open_volume
 from airtap_sync.progress import ConsoleProgress, ProgressEvent, Stage
+from airtap_sync.sync import SyncOptions, SyncResult, run_sync, write_sync_report
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -180,59 +180,79 @@ def _sync(args: argparse.Namespace) -> int:
     if args.usb is None:
         print("请用 --usb 指定 U 盘根目录", file=sys.stderr)
         return EXIT_ERROR
-    if args.only == "files":
-        print("目录同步尚未实现（计划在 M3 完成）", file=sys.stderr)
-        return EXIT_NOT_IMPLEMENTED
+    want_git = args.only in (None, "git")
+    want_files = args.only in (None, "files")
+    if want_git and config.gitlab is None:
+        if args.only == "git":
+            print("配置中没有 [gitlab]，无法同步 Git", file=sys.stderr)
+            return EXIT_ERROR
+        want_git = False
+    if want_files and not config.folders:
+        if args.only == "files":
+            print("配置中没有 [folders.*]，没有要同步的目录", file=sys.stderr)
+            return EXIT_ERROR
+        want_files = False
+    if not (want_git or want_files):
+        print(
+            "配置中既没有 [gitlab] 也没有 [folders.*]，没有可同步的内容",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    ctx = open_context(config) if want_git else None
     try:
         volume = open_volume(args.usb, config.pair_id)
-        code = _sync_git(args, config, volume)
+        result = _run_with_confirmation(
+            args, config, volume, ctx, SyncOptions(git=want_git, files=want_files)
+        )
     except (VolumeError, FormatVersionError, GitSyncAborted) as e:
         print(f"同步中止：{e}", file=sys.stderr)
         return EXIT_ERROR
     except (GitError, GitLabError) as e:
         print(f"同步失败：{e}", file=sys.stderr)
         return EXIT_ERROR
-    if args.only is None:
-        print(
-            "提示：目录同步尚未实现（计划在 M3 完成），本次只同步了 Git",
-            file=sys.stderr,
-        )
-    return code
-
-
-def _sync_git(args: argparse.Namespace, config: Config, volume: Volume) -> int:
-    ctx = open_context(config)
-    try:
-        confirm = args.confirm_deletes
-        while True:
-            report = run_git_sync(
-                ctx,
-                volume,
-                config.side,
-                config.transfer,
-                paths.staging_dir(),
-                GitSyncOptions(confirm=confirm, dry_run=args.dry_run),
-                ConsoleProgress(),
-            )
-            if confirm or args.dry_run or not report.has_pending_confirmation:
-                break
-            confirm = _ask_confirmation(report)
-            if not confirm:
-                break
     finally:
-        ctx.close()
-    files = write_report(report, [volume.reports_dir, paths.log_dir() / "reports"])
-    print(report.summary())
-    if files:
-        print(f"报告：{files[-1]}")
-    if report.needs_attention:
-        return EXIT_ATTENTION
-    return EXIT_OK
+        if ctx is not None:
+            ctx.close()
+    reports = write_sync_report(
+        result, [volume.reports_dir, paths.log_dir() / "reports"]
+    )
+    for line in result.summaries():
+        print(line)
+    if reports:
+        print(f"报告：{reports[-1]}")
+    return EXIT_ATTENTION if result.needs_attention else EXIT_OK
 
 
-def _ask_confirmation(report: GitSyncReport) -> bool:
+def _run_with_confirmation(
+    args: argparse.Namespace,
+    config: Config,
+    volume: Volume,
+    ctx: GitContext | None,
+    options: SyncOptions,
+) -> SyncResult:
+    """Run the sync; if deletions/creations were held back, offer to apply them."""
+    options.confirm = args.confirm_deletes
+    options.dry_run = args.dry_run
+    while True:
+        result = run_sync(
+            config,
+            volume,
+            paths.staging_dir(),
+            paths.state_dir(),
+            options,
+            ctx,
+            ConsoleProgress(),
+        )
+        if options.confirm or args.dry_run or not result.has_pending_confirmation:
+            return result
+        options.confirm = _ask_confirmation(result)
+        if not options.confirm:
+            return result
+
+
+def _ask_confirmation(result: SyncResult) -> bool:
     """Ask on a terminal whether to apply the held-back deletions/creations."""
-    items = report.pending_deletes + report.pending_creates
+    items = result.pending_items()
     print(f"有 {len(items)} 项操作超过安全阈值，需要确认：", file=sys.stderr)
     for item in items[:20]:
         print(f"  {item}", file=sys.stderr)

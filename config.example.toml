@@ -32,7 +32,9 @@ max_size = "100GiB"               # 缓存上限，超过后按最近最少使�
 max_deletions = 20                # 一次删除分支/tag 超过此数量时，转人工确认
 max_new_projects = 20             # 一次新建工程超过此数量时，转人工确认
 
-# 目录同步（尚未实现，先不用配置）
+# 目录同步：每个 [folders.<名称>] 是一对要同步的目录，两端用相同的名称。
+# 默认已忽略 .git/、~$*、*.tmp、Thumbs.db、desktop.ini；ignore 是额外的规则
+# （gitignore 语法，两端规则取并集）。
 # [folders.docs]
 # path = 'D:\work\docs'
 # ignore = ["build/", "*.log"]
