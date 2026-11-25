@@ -1,0 +1,635 @@
+"""One Git sync run on one side: import the peer's changes, export ours.
+
+Order of a run:
+
+1. read the peer's outbox (its project manifest, bundles and feedback);
+2. read the local GitLab (projects, then ``git ls-remote`` for every project);
+3. three-way merge at project level, then at ref level for projects whose peer
+   side changed, applying the changes to the local GitLab;
+4. rewrite our outbox: manifest, feedback and bundles for what the peer lacks.
+
+Everything is derived from full state (manifests), never from a log of
+operations, so a missed day, a lost drive or an interrupted run is repaired by
+the next run.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import shutil
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from airtap_sync.config import Side, TransferConfig
+from airtap_sync.gitlab.projects import Project, is_excluded
+from airtap_sync.gitsync.bundle import MissingPrerequisites
+from airtap_sync.gitsync.cache import repo_key
+from airtap_sync.gitsync.context import GitContext
+from airtap_sync.gitsync.gitcmd import GitError, RefMap
+from airtap_sync.gitsync.manifest import (
+    BundleInfo,
+    ProjectRecord,
+    ProjectsManifest,
+    record_from_project,
+)
+from airtap_sync.gitsync.projectplan import (
+    ProjectAction,
+    ProjectDecision,
+    detect_renames,
+    plan_projects,
+)
+from airtap_sync.gitsync.projectsync import sync_project
+from airtap_sync.gitsync.refs import ActionKind, needs_import
+from airtap_sync.gitsync.refsync import export_bundle, read_local_refs
+from airtap_sync.gitsync.report import ExportedBundle, GitSyncReport
+from airtap_sync.gitsync.transport import (
+    GIT_MANIFEST,
+    RECEIVED,
+    Received,
+    bundle_base,
+)
+from airtap_sync.medium.atomicio import sha256_file
+from airtap_sync.medium.outbox import (
+    Commit,
+    OutboxWriter,
+    dump_json_gz,
+    load_json_gz,
+    read_outbox,
+    resolve_relpath,
+)
+from airtap_sync.medium.parts import PartsError, fetch, store
+from airtap_sync.medium.quota import Budget, usb_budget
+from airtap_sync.medium.volume import Volume
+from airtap_sync.progress import ProgressCallback, ProgressEvent, Stage, null_progress
+
+log = logging.getLogger(__name__)
+
+
+class GitSyncAborted(Exception):
+    """The run was stopped because continuing could be wrong or harmful."""
+
+
+@dataclass
+class GitSyncOptions:
+    confirm: bool = False  # confirm deletions / creations above the thresholds
+    dry_run: bool = False
+    now: datetime | None = None
+
+
+def run_git_sync(
+    ctx: GitContext,
+    volume: Volume,
+    side: Side,
+    transfer: TransferConfig,
+    staging: Path,
+    options: GitSyncOptions | None = None,
+    progress: ProgressCallback = null_progress,
+) -> GitSyncReport:
+    """Run one Git sync on ``side`` against the drive ``volume``."""
+    run = _Run(
+        ctx, volume, side, transfer, staging, options or GitSyncOptions(), progress
+    )
+    return run.execute()
+
+
+class _Run:
+    def __init__(
+        self,
+        ctx: GitContext,
+        volume: Volume,
+        side: Side,
+        transfer: TransferConfig,
+        staging: Path,
+        options: GitSyncOptions,
+        progress: ProgressCallback,
+    ) -> None:
+        self.ctx = ctx
+        self.volume = volume
+        self.side: Side = side
+        self.peer_side: Side = "B" if side == "A" else "A"
+        self.transfer = transfer
+        self.staging = staging / "git"
+        self.outgoing = staging / "git-outgoing"
+        self.options = options
+        self.progress = progress
+        self.max_new_projects = ctx.safety.max_new_projects
+        self.created: set[str] = set()
+        self.new_local_ids: dict[int, str] = {}
+        self._exported_refs: dict[str, RefMap] = {}
+        self.report = GitSyncReport(side, dry_run=options.dry_run)
+        self.my_dir = volume.outbox_dir(side)
+        self.peer_dir = volume.outbox_dir(self.peer_side)
+        now = options.now or datetime.now(UTC)
+        self.stamp = now.strftime("%Y%m%dT%H%M%SZ")
+        self.feedback_out = Received()  # what we tell the peer
+        self.local_records: dict[str, ProjectRecord] = {}
+        self.local_projects: dict[str, Project] = {}
+
+    # ----- driver --------------------------------------------------------------
+
+    def execute(self) -> GitSyncReport:
+        state = self.ctx.state
+        peer_commit = read_outbox(self.peer_dir, self.peer_side)
+        peer = self._load_peer_manifest(peer_commit)
+        feedback_in = self._load_feedback(peer_commit)
+
+        self._read_local()
+        base_projects = state.base_projects()
+        if not base_projects and not state.known_keys():
+            self.report.warnings.append(
+                "尚未建立基准（git snapshot / git baseline）：将按首次同步处理，"
+                "不会产生删除，但可能传输大量数据"
+            )
+
+        plan = None
+        if peer is not None:
+            peer_records = self._peer_records(peer)
+            plan = plan_projects(self.local_records, peer_records, base_projects)
+            self.report.projects_total = len(plan.decisions)
+            self._check_vanished(plan.of(ProjectAction.GONE_LOCAL))
+            for d in plan.decisions:
+                if d.action in (
+                    ProjectAction.GONE_LOCAL,
+                    ProjectAction.GONE_PEER,
+                    ProjectAction.RENAMED_LOCAL,
+                    ProjectAction.RENAMED_PEER,
+                ):
+                    self.report.notes.append(f"{d.path}：{d.note}")
+                elif d.action is ProjectAction.SKIP and d.note:
+                    self.report.warnings.append(f"{d.path}：{d.note}")
+        else:
+            self.report.warnings.append("尚未收到对方的数据，本轮只导出")
+
+        if self.options.dry_run:
+            self._dry_run(plan, peer)
+            return self.report
+
+        if peer is not None and plan is not None:
+            self._import(plan.decisions, peer)
+            new_base = {
+                k: p
+                for k, p in base_projects.items()
+                if k in self.local_records or k in peer_records
+            }
+            new_base.update(plan.shared)
+            for key in self.created:
+                new_base[key] = self.local_records[key].path
+            state.set_base_projects(new_base)
+        self._export(peer, feedback_in)
+        ids = {p.id: p.full_path for p in self.local_projects.values()}
+        state.set_local_ids({**ids, **self.new_local_ids})
+        self._cleanup_staging(peer)
+        self.progress(ProgressEvent(Stage.DONE, self.report.summary()))
+        return self.report
+
+    # ----- reading -------------------------------------------------------------
+
+    def _load_peer_manifest(self, commit: Commit | None) -> ProjectsManifest | None:
+        if commit is None or GIT_MANIFEST not in commit.manifests:
+            return None
+        try:
+            raw = load_json_gz(resolve_relpath(self.peer_dir, GIT_MANIFEST))
+            manifest = ProjectsManifest.from_json(raw)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            log.warning("peer git manifest unreadable: %s", e)
+            return None
+        return manifest if manifest.side == self.peer_side else None
+
+    def _load_feedback(self, commit: Commit | None) -> Received:
+        if commit is None or RECEIVED not in commit.manifests:
+            return Received()
+        return Received.load(resolve_relpath(self.peer_dir, RECEIVED))
+
+    def _peer_records(self, peer: ProjectsManifest) -> dict[str, ProjectRecord]:
+        excluded = self.ctx.config.exclude_projects
+        flt = self.ctx.ref_filter
+        records = {}
+        for key, rec in peer.projects.items():
+            if is_excluded(rec.path, excluded):
+                continue
+            refs = None if rec.refs is None else flt.apply(rec.refs)
+            records[key] = ProjectRecord(**{**rec.to_dict(), "refs": refs})
+        return records
+
+    def _read_local(self) -> None:
+        ctx = self.ctx
+        self.progress(ProgressEvent(Stage.SCAN, "读取本端 GitLab 的工程列表"))
+        projects = ctx.discover()
+        if not projects and ctx.state.base_projects():
+            # An empty listing is only plausible on a brand-new GitLab; once
+            # projects have been shared it points at a wrong URL or token.
+            raise GitSyncAborted(
+                "本端 GitLab 没有返回任何工程，可能是地址、令牌或权限有误"
+            )
+        self.report.projects_total = len(projects)
+        done = 0
+
+        def on_done(_r: object) -> None:
+            nonlocal done
+            done += 1
+            if done % 25 == 0 or done == len(projects):
+                self.progress(
+                    ProgressEvent(Stage.SCAN, "检查分支和 tag", done, len(projects))
+                )
+
+        scanned = ctx.scan(projects, on_done)
+        previous = ctx.state.local_ids()
+        renames = detect_renames({p.id: p.full_path for p in projects}, previous)
+        for project in projects:
+            result = scanned[project.key]
+            refs = ctx.ref_filter.apply(result.refs or {}) if result.ok else None
+            if not result.ok:
+                self.report.failures.append(f"{project.full_path}：{result.error}")
+            self.local_records[project.key] = record_from_project(
+                project, refs, renames.get(project.key)
+            )
+            self.local_projects[project.key] = project
+
+    def _check_vanished(self, gone: list[ProjectDecision]) -> None:
+        limit = self.ctx.max_deletions
+        if len(gone) > limit:
+            raise GitSyncAborted(
+                f"有 {len(gone)} 个以前共有的工程在本端消失，超过阈值 {limit}，"
+                "可能是令牌权限不足或 GitLab 异常，已停止"
+            )
+
+    # ----- import --------------------------------------------------------------
+
+    def _import(self, decisions: list[ProjectDecision], peer: ProjectsManifest) -> None:
+        state = self.ctx.state
+        work: list[ProjectDecision] = []
+        creations = []
+        for d in decisions:
+            self.report.projects_checked += 1
+            if d.action is ProjectAction.SYNC and d.local and d.peer:
+                assert d.local.refs is not None and d.peer.refs is not None
+                if d.local.refs == d.peer.refs:
+                    state.set_base_refs(d.key, d.local.refs)
+                    state.set_peer_refs(d.key, d.peer.refs)
+                elif needs_import(d.local.refs, d.peer.refs, state.base_refs(d.key)):
+                    if d.local.archived:
+                        self.report.notes.append(
+                            f"{d.path}：本端工程已归档，无法接收更新"
+                        )
+                    else:
+                        work.append(d)
+                else:
+                    state.set_peer_refs(d.key, d.peer.refs)
+            elif d.action is ProjectAction.CREATE_LOCAL:
+                creations.append(d)
+
+        if len(creations) > self.max_new_projects and not self.options.confirm:
+            self.report.pending_creates += [d.path for d in creations]
+            creations = []
+        work += creations
+
+        for i, d in enumerate(work, start=1):
+            self.progress(ProgressEvent(Stage.IMPORT, d.path, i, len(work), "projects"))
+            self._import_one(d, peer, create=d.action is ProjectAction.CREATE_LOCAL)
+
+    def _import_one(
+        self, d: ProjectDecision, peer: ProjectsManifest, create: bool
+    ) -> None:
+        assert d.peer is not None and d.peer.refs is not None
+        info = peer.bundles.get(d.key)
+        bundle: Path | None = None
+        if info is not None:
+            fetched = self._fetch_bundle(d, info)
+            if fetched is None:
+                return  # not complete yet
+            bundle = fetched
+        elif create and d.peer.refs:
+            self.report.deferred.append(f"{d.path}：等待对方发送数据")
+            return
+
+        local_path = d.local.path if d.local else d.path
+        try:
+            result = sync_project(
+                self.ctx,
+                d.peer,
+                local_path,
+                peer_side=self.peer_side,
+                bundle=bundle,
+                create=create,
+                trash_stamp=self.stamp,
+                confirmed=self.options.confirm,
+            )
+        except MissingPrerequisites as e:
+            self.feedback_out.needs_full.append(d.key)
+            self.report.deferred.append(f"{d.path}：{e}，已请求对方发送完整数据")
+            return
+        finally:
+            if bundle is not None:
+                bundle.unlink(missing_ok=True)
+
+        if result.error:
+            self.report.failures.append(f"{result.path}：{result.error}")
+            return
+        self.report.warnings += [f"{result.path}：{n}" for n in result.notes]
+        if result.created:
+            self.report.created.append(result.path)
+            self.created.add(d.key)
+            if result.project_id is not None:
+                self.new_local_ids[result.project_id] = result.path
+        refs = result.refs
+        assert refs is not None
+        if refs.applied or result.created:
+            self.report.updated.append(result.path)
+        self.report.refs_applied += len(refs.applied)
+        self.report.refs_deleted += [
+            f"{result.path}: {a.ref}"
+            for a in refs.applied
+            if a.kind is ActionKind.DELETE
+        ]
+        self.report.refs_deleted += [f"{result.path}: {r}" for r in refs.cleaned]
+        for a in refs.conflicts:
+            self.report.conflicts.append(f"{result.path}: {a.ref}（{a.note}）")
+        self.report.deferred += [
+            f"{result.path}: {a.ref}（{a.note}）" for a in refs.deferred
+        ]
+        self.report.pending_deletes += [
+            f"{result.path}: {a.ref}" for a in refs.pending_deletes
+        ]
+        self.report.failures += [
+            f"{result.path}: {r}：{why}" for r, why in refs.failed.items()
+        ]
+        # Keep the local record in step with what the manifest should now say.
+        record = self.local_records.get(d.key)
+        if record is None and result.created:
+            self.local_records[d.key] = ProjectRecord(
+                **{
+                    **d.peer.to_dict(),
+                    "refs": refs.local_after,
+                    "renamed_from": None,
+                    "project_id": result.project_id or 0,
+                }
+            )
+        elif record is not None:
+            self.local_records[d.key] = ProjectRecord(
+                **{**record.to_dict(), "refs": refs.local_after}
+            )
+
+    def _fetch_bundle(self, d: ProjectDecision, info: BundleInfo) -> Path | None:
+        """Bring the peer's bundle for ``d`` to a local file, or ``None``."""
+        src = bundle_base(self.peer_dir, d.peer.path if d.peer else d.path, info.sha256)
+        stage_base = self.staging / f"{info.sha256}.stage"
+        dest = self.staging / f"{info.sha256}.bundle"
+        self.staging.mkdir(parents=True, exist_ok=True)
+        try:
+            result = fetch(src, stage_base, dest, sha256=info.sha256, size=info.size)
+        except PartsError as e:
+            self.report.failures.append(f"{d.path}：bundle 校验失败：{e}")
+            return None
+        if result.staged:
+            self.feedback_out.staged[info.sha256] = sorted(result.staged)
+        if not result.complete:
+            self.report.deferred.append(f"{d.path}：数据尚未传完")
+            return None
+        self.feedback_out.staged.pop(info.sha256, None)
+        return dest
+
+    # ----- export --------------------------------------------------------------
+
+    def _export(self, peer: ProjectsManifest | None, feedback_in: Received) -> None:
+        ctx = self.ctx
+        state = ctx.state
+        budget = usb_budget(self.volume.root, self.transfer)
+        base_projects = state.base_projects()
+        previous = self._previous_manifest()
+        wants_full = {k.lower() for k in feedback_in.needs_full}
+
+        candidates: list[tuple[int, str, bool, str]] = []
+        pending_new = []
+        for key, rec in sorted(self.local_records.items()):
+            if rec.refs is None or not rec.refs:
+                continue
+            peer_rec = peer.projects.get(key) if peer else None
+            if peer_rec is not None and peer_rec.refs is not None:
+                peer_refs = peer_rec.refs
+            else:
+                # Without a fresh report assume the peer holds what we last agreed.
+                peer_refs = state.peer_refs(key) or state.base_refs(key)
+            peer_has = key in base_projects or peer_rec is not None
+            if peer_has and all(peer_refs.get(r) == o for r, o in rec.refs.items()):
+                continue
+            full = (not peer_has) or key in wants_full
+            if not peer_has:
+                pending_new.append(rec.path)
+            known = _known(state.peer_refs(key), state.base_refs(key))
+            sig = _signature(rec.refs, None if full else known)
+            project = self.local_projects.get(key)
+            size = project.repository_size if project else 0
+            candidates.append((size, key, full, sig))
+
+        if len(pending_new) > self.max_new_projects and not self.options.confirm:
+            self.report.pending_creates += [f"{p}（对方将新建）" for p in pending_new]
+            skipped = {p.lower() for p in pending_new}
+            candidates = [c for c in candidates if c[1] not in skipped]
+
+        candidates.sort()
+        bundles: dict[str, BundleInfo] = {}
+        with OutboxWriter(self.my_dir, self.side) as out:
+            for i, (_size, key, full, sig) in enumerate(candidates, 1):
+                rec = self.local_records[key]
+                if budget.remaining <= 0:
+                    kept = self._still_valid(key, rec, sig, previous)
+                    if kept is not None:
+                        bundles[key] = kept  # parts already on the drive stay
+                    else:
+                        self.report.unsent.append(rec.path)
+                    continue
+                self.progress(
+                    ProgressEvent(
+                        Stage.EXPORT, rec.path, i, len(candidates), "projects"
+                    )
+                )
+                info = self._export_one(
+                    key, rec, full, sig, previous, feedback_in, budget
+                )
+                if info is not None:
+                    bundles[key] = info
+            self._drop_stale_bundles(bundles)
+
+            records = {
+                k: (
+                    ProjectRecord(**{**r.to_dict(), "refs": self._refs_for(k, r)})
+                    if r.refs is not None
+                    else r
+                )
+                for k, r in self.local_records.items()
+            }
+            manifest = ProjectsManifest(self.side, records, bundles)
+            out.write_manifest(GIT_MANIFEST, dump_json_gz(manifest.to_json()))
+            out.write_manifest(RECEIVED, self.feedback_out.to_bytes())
+        self.report.budget_spent = budget.spent
+        self.report.budget_left = budget.remaining
+
+    def _refs_for(self, key: str, rec: ProjectRecord) -> RefMap:
+        return self._exported_refs.get(key, rec.refs or {})
+
+    def _still_valid(
+        self,
+        key: str,
+        rec: ProjectRecord,
+        signature: str,
+        previous: ProjectsManifest | None,
+    ) -> BundleInfo | None:
+        """The bundle of the previous run, if it is still the right one."""
+        if previous is None or key not in previous.bundles:
+            return None
+        old = previous.bundles[key]
+        local = self.outgoing / f"{repo_key(rec.path)}-{old.sha256}.bundle"
+        return old if old.signature == signature and local.is_file() else None
+
+    def _previous_manifest(self) -> ProjectsManifest | None:
+        commit = read_outbox(self.my_dir, self.side)
+        if commit is None or GIT_MANIFEST not in commit.manifests:
+            return None
+        try:
+            raw = load_json_gz(resolve_relpath(self.my_dir, GIT_MANIFEST))
+            return ProjectsManifest.from_json(raw)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _export_one(
+        self,
+        key: str,
+        rec: ProjectRecord,
+        full: bool,
+        signature: str,
+        previous: ProjectsManifest | None,
+        feedback_in: Received,
+        budget: Budget,
+    ) -> BundleInfo | None:
+        self.outgoing.mkdir(parents=True, exist_ok=True)
+        info: BundleInfo | None = None
+        src: Path | None = None
+        if previous is not None and key in previous.bundles:
+            old = previous.bundles[key]
+            candidate = self.outgoing / f"{repo_key(rec.path)}-{old.sha256}.bundle"
+            if old.signature == signature and candidate.is_file():
+                info, src = old, candidate
+
+        if info is None or src is None:
+            try:
+                info, src = self._build_bundle(key, rec, full)
+            except (GitError, OSError) as e:
+                self.report.failures.append(f"{rec.path}：生成 bundle 失败：{e}")
+                return None
+            if info is None or src is None:
+                return None  # peer already has everything
+
+        skip = feedback_in.staged.get(info.sha256, [])
+        base = bundle_base(self.my_dir, rec.path, info.sha256)
+        try:
+            result = store(
+                src, base, part_size=self.transfer.part_size, budget=budget, skip=skip
+            )
+        except (PartsError, OSError) as e:
+            self.report.failures.append(f"{rec.path}：写入 U 盘失败：{e}")
+            return None
+        self.report.exported.append(
+            ExportedBundle(rec.path, info.size, result.complete, info.full)
+        )
+        return info
+
+    def _build_bundle(
+        self,
+        key: str,
+        rec: ProjectRecord,
+        full: bool,
+    ) -> tuple[BundleInfo | None, Path | None]:
+        ctx = self.ctx
+        url = ctx.clone_url(rec.path)
+        project = self.local_projects.get(key)
+        size = project.repository_size if project else 0
+        state = ctx.state
+        with ctx.cache.open(rec.path, url, estimated_size=size) as repo:
+            refs = ctx.ref_filter.apply(read_local_refs(ctx.runner, repo))
+            self._exported_refs = {**self._exported_refs, key: refs}
+            peer_refs = state.peer_refs(key)
+            tmp = self.outgoing / f"{repo_key(rec.path)}.building"
+            made = export_bundle(
+                ctx.runner,
+                repo,
+                tmp,
+                refs,
+                peer_refs=peer_refs,
+                base=state.base_refs(key),
+                full=full,
+            )
+        if not made:
+            return None, None
+        digest = sha256_file(tmp)
+        final = self.outgoing / f"{repo_key(rec.path)}-{digest}.bundle"
+        shutil.move(str(tmp), final)
+        # The signature describes the refs actually bundled.
+        known = None if full else _known(peer_refs, state.base_refs(key))
+        signature = _signature(refs, known)
+        return BundleInfo(digest, final.stat().st_size, full, signature), final
+
+    def _drop_stale_bundles(self, current: Mapping[str, BundleInfo]) -> None:
+        """Remove bundle files on the drive and locally that are no longer wanted."""
+        wanted_dirs = {
+            repo_key(self.local_records[k].path): info.sha256
+            for k, info in current.items()
+        }
+        root = self.my_dir / "git" / "bundles"
+        if root.is_dir():
+            for entry in root.iterdir():
+                sha = wanted_dirs.get(entry.name)
+                if sha is None:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    continue
+                for f in entry.iterdir():
+                    if not f.name.startswith(f"{sha}.bundle"):
+                        f.unlink(missing_ok=True)
+        if self.outgoing.is_dir():
+            keep = {f"{k}-{sha}.bundle" for k, sha in wanted_dirs.items()}
+            for f in self.outgoing.iterdir():
+                if f.name not in keep:
+                    f.unlink(missing_ok=True)
+
+    # ----- housekeeping -------------------------------------------------------------
+
+    def _cleanup_staging(self, peer: ProjectsManifest | None) -> None:
+        if not self.staging.is_dir():
+            return
+        wanted = {b.sha256 for b in peer.bundles.values()} if peer else set()
+        for f in self.staging.iterdir():
+            sha = f.name.split(".", 1)[0]
+            if sha not in wanted:
+                f.unlink(missing_ok=True)
+
+    def _dry_run(self, plan, peer: ProjectsManifest | None) -> None:
+        """Report what would happen, without touching GitLab or the drive."""
+        if plan is None:
+            return
+        state = self.ctx.state
+        for d in plan.decisions:
+            self.report.projects_checked += 1
+            if d.action is ProjectAction.CREATE_LOCAL:
+                self.report.created.append(d.path)
+            elif d.action is ProjectAction.SYNC and d.local and d.peer:
+                assert d.local.refs is not None and d.peer.refs is not None
+                if d.local.refs != d.peer.refs and needs_import(
+                    d.local.refs, d.peer.refs, state.base_refs(d.key)
+                ):
+                    self.report.updated.append(d.path)
+
+
+def _known(peer_refs: Mapping[str, str], base_refs: Mapping[str, str]) -> set[str]:
+    return set(peer_refs.values()) | set(base_refs.values())
+
+
+def _signature(refs: Mapping[str, str], known: set[str] | None) -> str:
+    """Identify a bundle's inputs: the refs it carries and what it assumes."""
+    doc = {
+        "refs": sorted(refs.items()),
+        "known": None if known is None else sorted(known),
+    }
+    return hashlib.sha256(json.dumps(doc).encode("utf-8")).hexdigest()

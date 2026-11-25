@@ -77,10 +77,23 @@ def record_from_project(
     )
 
 
+@dataclass(frozen=True)
+class BundleInfo:
+    """A bundle the publishing side placed in its outbox for one project."""
+
+    sha256: str
+    size: int
+    full: bool  # carries all history (no prerequisites)
+    # Hash of the inputs it was built from; an unchanged signature means the
+    # existing bundle (and any parts already delivered) can be reused as is.
+    signature: str
+
+
 @dataclass
 class ProjectsManifest:
     side: Side
     projects: dict[str, ProjectRecord] = field(default_factory=dict)  # by key
+    bundles: dict[str, BundleInfo] = field(default_factory=dict)  # by key
 
     @classmethod
     def of(cls, side: Side, records: Iterable[ProjectRecord]) -> ProjectsManifest:
@@ -91,6 +104,7 @@ class ProjectsManifest:
             "version": MANIFEST_VERSION,
             "side": self.side,
             "projects": [r.to_dict() for _, r in sorted(self.projects.items())],
+            "bundles": {k: asdict(b) for k, b in sorted(self.bundles.items())},
         }
 
     @classmethod
@@ -100,4 +114,12 @@ class ProjectsManifest:
         side = raw["side"]
         if side not in ("A", "B"):
             raise ValueError(f"bad side {side!r}")
-        return cls.of(side, (ProjectRecord.from_dict(p) for p in raw["projects"]))
+        manifest = cls.of(side, (ProjectRecord.from_dict(p) for p in raw["projects"]))
+        for key, b in raw.get("bundles", {}).items():
+            manifest.bundles[str(key)] = BundleInfo(
+                sha256=str(b["sha256"]),
+                size=int(b["size"]),
+                full=bool(b["full"]),
+                signature=str(b["signature"]),
+            )
+        return manifest

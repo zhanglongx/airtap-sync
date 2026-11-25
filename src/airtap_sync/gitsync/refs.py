@@ -207,6 +207,18 @@ def _update_base(
         base[ref] = theirs
 
 
+def needs_import(local: RefMap, peer: RefMap, base: RefMap) -> bool:
+    """Whether the peer changed anything that the local side does not already have.
+
+    When only the local side changed (or nothing did), there is nothing to apply
+    locally, so the project need not be touched at all.
+    """
+    return any(
+        peer.get(ref) != base.get(ref) and peer.get(ref) != local.get(ref)
+        for ref in set(local) | set(peer) | set(base)
+    )
+
+
 def stale_conflict_branches(
     local: RefMap,
     peer_side: str,

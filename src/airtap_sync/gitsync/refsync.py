@@ -51,6 +51,7 @@ class RefSyncResult:
     failed: dict[str, str] = field(default_factory=dict)
     conflicts: list[RefAction] = field(default_factory=list)
     deferred: list[RefAction] = field(default_factory=list)
+    pending_deletes: list[RefAction] = field(default_factory=list)
     parked: list[str] = field(default_factory=list)
     cleaned: list[str] = field(default_factory=list)
     new_base: RefMap = field(default_factory=dict)
@@ -72,10 +73,14 @@ def sync_refs(
     ref_filter: RefFilter,
     ci_skip: bool = True,
     trash_stamp: str = "unknown",
+    max_deletions: int | None = None,
+    confirmed: bool = False,
 ) -> RefSyncResult:
     """Bring the local GitLab's refs in line with the peer's, without forcing.
 
     ``repo`` must already hold the peer's objects (see ``import_bundle``).
+    More than ``max_deletions`` deletions are held back as ``pending_deletes``
+    unless ``confirmed``; their base is kept, so they come up again next run.
     """
     local_all = read_local_refs(runner, repo)
     local = ref_filter.apply(local_all)
@@ -114,6 +119,12 @@ def sync_refs(
             result.conflicts.append(action)
         elif action.kind is ActionKind.DEFER:
             result.deferred.append(action)
+    pending = plan.of_kind(ActionKind.DELETE)
+    if max_deletions is not None and len(pending) > max_deletions and not confirmed:
+        result.pending_deletes = pending
+        for action in pending:
+            deletes.pop(action.ref, None)
+            _restore_base(result.new_base, action.ref, base)
     for action in stale:
         if action.old:
             deletes[action.ref] = action.old
@@ -139,6 +150,8 @@ def sync_refs(
     cache_updates: dict[str, str | None] = {}
     for action in plan.actions:
         if action.kind not in (ActionKind.UPDATE, ActionKind.DELETE):
+            continue
+        if action in result.pending_deletes:
             continue
         if action.ref in pushed.ok:
             result.applied.append(action)

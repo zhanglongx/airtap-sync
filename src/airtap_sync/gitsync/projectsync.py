@@ -12,7 +12,7 @@ from airtap_sync.gitlab.projects import (
     create_project,
     set_default_branch,
 )
-from airtap_sync.gitsync.bundle import import_bundle
+from airtap_sync.gitsync.bundle import MissingPrerequisites, import_bundle
 from airtap_sync.gitsync.context import GitContext
 from airtap_sync.gitsync.gitcmd import GitError, RefMap
 from airtap_sync.gitsync.manifest import ProjectRecord
@@ -27,6 +27,7 @@ class ProjectSyncResult:
     key: str
     path: str
     created: bool = False
+    project_id: int | None = None
     refs: RefSyncResult | None = None
     error: str | None = None
     notes: list[str] = field(default_factory=list)
@@ -46,6 +47,7 @@ def sync_project(
     bundle: Path | None,
     create: bool,
     trash_stamp: str,
+    confirmed: bool = False,
 ) -> ProjectSyncResult:
     """Bring one project in line with the peer's record.
 
@@ -75,6 +77,7 @@ def sync_project(
             result.path = local_path
             ctx.state.add_base_project(key, local_path)
             project_id = created.id
+            result.project_id = project_id
         url = ctx.clone_url(local_path)
         base = {} if create else ctx.state.base_refs(key)
         with ctx.cache.open(local_path, url) as repo:
@@ -90,11 +93,15 @@ def sync_project(
                 ref_filter=ctx.ref_filter,
                 ci_skip=ctx.config.ci_skip,
                 trash_stamp=trash_stamp,
+                max_deletions=ctx.max_deletions,
+                confirmed=confirmed,
             )
         ctx.state.set_base_refs(key, result.refs.new_base)
         ctx.state.set_peer_refs(key, peer.refs)
         if create:
             _finish_creation(ctx, peer, project_id, result)
+    except MissingPrerequisites:
+        raise  # the caller asks the peer for a full bundle
     except (GitError, GitLabError) as e:
         log.warning("project %s failed: %s", local_path, e)
         result.error = str(e)
