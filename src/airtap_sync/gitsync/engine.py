@@ -118,6 +118,7 @@ class _Run:
         self.options = options
         self.progress = progress
         self.max_new_projects = ctx.safety.max_new_projects
+        self.is_admin = True  # until the user is looked up; be optimistic
         self.created: set[str] = set()
         self.new_local_ids: dict[int, str] = {}
         self._exported_refs: dict[str, RefMap] = {}
@@ -256,6 +257,7 @@ class _Run:
             user = current_user(self.ctx.client)
         except GitLabError:
             return  # listing projects worked; do not fail the run over this
+        self.is_admin = user.is_admin
         if not user.is_admin:
             self.report.warnings.append(
                 f"当前账号 {user.username} 不是管理员：只能同步有权限看到、"
@@ -290,7 +292,7 @@ class _Run:
                         self.report.notes.append(
                             f"{d.path}：本端工程已归档，无法接收更新"
                         )
-                    elif not self.local_projects[d.key].can_push():
+                    elif not self.local_projects[d.key].can_push(self.is_admin):
                         readonly.append(d.path)
                     else:
                         work.append(d)

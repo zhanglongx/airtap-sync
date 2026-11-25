@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -110,25 +111,33 @@ def _check_access(projects: list[Project], is_admin: bool) -> CheckResult:
     """How much the token's user may do in the listed projects."""
     name = "项目权限"
     counts: dict[str, int] = {}
-    readonly: list[str] = []
+    readonly: list[Project] = []
     for p in projects:
-        label = (
-            "未知"
-            if p.access_level is None
-            else next((n for lv, n in _LEVELS if p.access_level >= lv), "无")
-        )
+        if is_admin:
+            label = "管理员"
+        elif p.access_level is None:
+            label = "非成员"
+        else:
+            label = next((n for lv, n in _LEVELS if p.access_level >= lv), "无")
         counts[label] = counts.get(label, 0) + 1
-        if not p.can_push():
-            readonly.append(p.full_path)
+        if not p.can_push(is_admin):
+            readonly.append(p)
     summary = "，".join(f"{k} {v}" for k, v in counts.items())
     if not readonly:
         return CheckResult(name, Status.OK, f"都有推送权限（{summary}）")
-    status = Status.WARN if is_admin else Status.FAIL
+    groups: dict[str, int] = {}
+    for p in readonly:
+        top = p.full_path.split("/", 1)[0]
+        groups[top] = groups.get(top, 0) + 1
+    biggest = "、".join(
+        f"{g}（{n}）" for g, n in sorted(groups.items(), key=lambda kv: -kv[1])[:8]
+    )
     return CheckResult(
         name,
-        status,
-        f"{len(readonly)}/{len(projects)} 个工程没有推送权限（{summary}），"
-        f"这些工程只能导出、不能接收更新，例如 {readonly[0]}",
+        Status.WARN,
+        f"{len(readonly)}/{len(projects)} 个工程没有推送权限（{summary}）。"
+        "这些工程在本端只能导出、不能接收对方的更新；"
+        f"集中在这些顶层命名空间：{biggest}",
     )
 
 
@@ -185,7 +194,17 @@ def _check_git(
     reported = sorted(
         {urlparse(p.http_url).netloc for p in projects[:50] if p.http_url} - {host}
     )
-    if reported:
+    same = [h for h in reported if _same_machine(h, host)]
+    if reported and len(same) == len(reported):
+        results.append(
+            CheckResult(
+                "external_url",
+                Status.OK,
+                f"GitLab 报告的地址 {', '.join(reported)} 与配置的 {host} "
+                "指向同一台机器",
+            )
+        )
+    elif reported:
         results.append(
             CheckResult(
                 "external_url",
@@ -200,6 +219,19 @@ def _check_git(
 
     results.append(_check_lfs(projects, lfs))
     return results
+
+
+def _same_machine(host_a: str, host_b: str) -> bool:
+    """Whether two ``host[:port]`` strings resolve to a common address."""
+
+    def addresses(netloc: str) -> set[str]:
+        name = netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
+        try:
+            return {info[4][0] for info in socket.getaddrinfo(name, None)}
+        except OSError:
+            return set()
+
+    return bool(addresses(host_a) & addresses(host_b))
 
 
 def _check_lfs(projects: list[Project], lfs: LfsClient) -> CheckResult:

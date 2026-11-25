@@ -338,3 +338,19 @@ def test_projects_without_push_rights_are_skipped_with_a_warning(
     assert any("无推送权限" in w and "team/app" in w for w in report.warnings)
     assert any("不是管理员" in w for w in report.warnings)
     assert not report.needs_attention  # a known limitation, not an incident
+
+
+def test_non_members_cannot_receive_unless_admin(sites: Sites) -> None:
+    seed(sites)
+    sites["A"].remote("team/app").commit("f", "2")
+    sites.run("A")
+    # A listing without permissions means "visible, but not a member".
+    sites["B"].gitlab.is_admin = False
+    before = sites["B"].heads("team/app")
+    report = sites.run("B")
+    assert sites["B"].heads("team/app") == before
+    assert any("无推送权限" in w for w in report.warnings)
+    sites["B"].gitlab.is_admin = True
+    sites.run("A")
+    sites.run("B")
+    assert sites["B"].heads("team/app") != before

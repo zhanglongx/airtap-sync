@@ -36,12 +36,15 @@ class Project:
     last_activity_at: str | None
     lfs_objects_size: int = 0
     # The token user's best role in the project (10 Guest … 40 Maintainer,
-    # 50 Owner); ``None`` when GitLab does not say (e.g. an admin who is no member).
+    # 50 Owner); ``None`` when the user is no member (the project is merely
+    # visible, e.g. internal) or GitLab does not say.
     access_level: int | None = None
 
-    def can_push(self) -> bool:
-        """Whether the token may push; unknown access is given the benefit of doubt."""
-        return self.access_level is None or self.access_level >= DEVELOPER
+    def can_push(self, is_admin: bool = False) -> bool:
+        """Whether the token may push. Admins can everywhere; others need a role."""
+        if is_admin:
+            return True
+        return self.access_level is not None and self.access_level >= DEVELOPER
 
     @property
     def key(self) -> str:

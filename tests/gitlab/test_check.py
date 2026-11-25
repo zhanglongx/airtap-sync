@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from airtap_sync.cli import EXIT_ERROR, EXIT_OK, main
+from airtap_sync.cli import EXIT_OK, main
 from airtap_sync.gitlab.check import Status, run_checks
 from airtap_sync.gitlab.client import GitLabClient
 from airtap_sync.gitlab.credentials import FileTokenStore
@@ -94,10 +94,19 @@ def test_lfs_not_enabled(fake_gitlab: FakeGitLab, populated: dict[str, Remote]) 
 def test_foreign_external_url_warns(
     fake_gitlab: FakeGitLab, populated: dict[str, Remote]
 ) -> None:
-    fake_gitlab.projects[0]["http_url_to_repo"] = "http://other-host/team/a.git"
+    fake_gitlab.projects[0]["http_url_to_repo"] = "http://other-host.invalid/team/a.git"
     result = checks(fake_gitlab, populated)["external_url"]
     assert result.status is Status.WARN
-    assert "other-host" in result.detail
+    assert "other-host.invalid" in result.detail
+
+
+def test_external_url_alias_of_the_same_machine_is_fine(
+    fake_gitlab: FakeGitLab, populated: dict[str, Remote]
+) -> None:
+    for p in fake_gitlab.projects:  # "localhost" resolves like 127.0.0.1
+        p["http_url_to_repo"] = p["http_url_to_repo"].replace("127.0.0.1", "localhost")
+    result = checks(fake_gitlab, populated)["external_url"]
+    assert result.status is Status.OK and "同一台机器" in result.detail
 
 
 def test_lfs_batch_roundtrip_and_errors(fake_gitlab: FakeGitLab) -> None:
@@ -140,12 +149,10 @@ def test_cli_check(
     assert main(["--config", str(config), "gitlab", "check"]) == EXIT_OK
     assert "[警告] 管理员权限" in capsys.readouterr().out
 
-    fake_gitlab.projects[0]["permissions"] = {
-        "project_access": {"access_level": 20},
-        "group_access": None,
-    }
-    assert main(["--config", str(config), "gitlab", "check"]) == EXIT_ERROR
-    assert "[失败] 项目权限" in capsys.readouterr().out
+    fake_gitlab.projects[0]["http_url_to_repo"] = "http://unresolvable.invalid/x.git"
+    fake_gitlab.is_admin = True
+    assert main(["--config", str(config), "gitlab", "check"]) == EXIT_OK
+    assert "[警告] external_url" in capsys.readouterr().out
 
 
 def test_access_levels_are_summarised(
@@ -159,7 +166,19 @@ def test_access_levels_are_summarised(
     fake_gitlab.projects[1]["permissions"] = perms(20)
     fake_gitlab.is_admin = True
     result = checks(fake_gitlab, populated)["项目权限"]
-    assert result.status is Status.WARN  # an admin can still push
-    assert "1/2" in result.detail and "Reporter 1" in result.detail
+    assert result.status is Status.OK  # an admin can push everywhere
+    assert "管理员 2" in result.detail
     fake_gitlab.is_admin = False
-    assert checks(fake_gitlab, populated)["项目权限"].status is Status.FAIL
+    result = checks(fake_gitlab, populated)["项目权限"]
+    assert result.status is Status.WARN
+    assert "1/2" in result.detail and "Reporter 1" in result.detail
+    assert "team（1）" in result.detail
+
+
+def test_non_members_are_read_only_for_non_admins(
+    fake_gitlab: FakeGitLab, populated: dict[str, Remote]
+) -> None:
+    fake_gitlab.is_admin = False  # permissions absent -> not a member
+    result = checks(fake_gitlab, populated)["项目权限"]
+    assert result.status is Status.WARN
+    assert "2/2" in result.detail and "非成员 2" in result.detail
