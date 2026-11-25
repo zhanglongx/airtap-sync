@@ -16,6 +16,7 @@ class FakeGitLab:
         self.token = token
         self.projects: list[dict[str, Any]] = []
         self.private_groups = False  # reject public projects in groups
+        self.version = "13.1.3-ee"
         self.username = "syncbot"
         self.is_admin = True
         self.requests: list[tuple[str, str]] = []
@@ -128,6 +129,8 @@ class FakeGitLab:
                         else []
                     )
                     return self._send(200, found)
+                if parsed.path == "/api/v4/version":
+                    return self._send(200, {"version": fake.version})
                 if parsed.path == "/api/v4/user":
                     return self._send(
                         200, {"username": fake.username, "is_admin": fake.is_admin}
@@ -158,6 +161,8 @@ class FakeGitLab:
 
         def do_POST(self: Any) -> None:
             fake.requests.append(("POST", self.path))
+            if self.path.endswith("/info/lfs/objects/batch"):
+                return self._lfs_batch()
             if self.headers.get("PRIVATE-TOKEN") != fake.token:
                 return self._send(401, {"message": "401 Unauthorized"})
             body = body_of(self)
@@ -227,6 +232,19 @@ class FakeGitLab:
             )
             return self._send(201, raw)
 
+        def _lfs_batch(self: Any) -> None:
+            body = body_of(self)
+            fake.requests.append(("LFS", self.path))
+            if not self.headers.get("Authorization", "").startswith("Basic "):
+                return self._send(401, {"message": "no auth"})
+            project = self.path.removesuffix(".git/info/lfs/objects/batch").strip("/")
+            if not any(
+                p["path_with_namespace"] == project and p.get("lfs_enabled")
+                for p in fake.projects
+            ):
+                return self._send(404, {"message": "LFS not enabled"})
+            return self._send(200, {"transfer": "basic", "objects": body["objects"]})
+
         def do_PUT(self: Any) -> None:
             fake.requests.append(("PUT", self.path))
             if self.headers.get("PRIVATE-TOKEN") != fake.token:
@@ -244,3 +262,4 @@ class FakeGitLab:
         handler.do_POST = do_POST  # type: ignore[attr-defined]
         handler.do_PUT = do_PUT  # type: ignore[attr-defined]
         handler._create_project = _create_project  # type: ignore[attr-defined]
+        handler._lfs_batch = _lfs_batch  # type: ignore[attr-defined]

@@ -17,8 +17,10 @@ from pathlib import Path
 
 from airtap_sync import __version__, paths
 from airtap_sync.config import Config, ConfigError, load_config
+from airtap_sync.gitlab.check import Status, run_checks
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
-from airtap_sync.gitlab.credentials import default_token_store
+from airtap_sync.gitlab.credentials import default_token_store, load_token
+from airtap_sync.gitlab.lfs import LfsClient
 from airtap_sync.gitlab.projects import current_user, filter_projects, list_projects
 from airtap_sync.gitsync.baseline import (
     Baseline,
@@ -102,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p = add("login", "把访问令牌保存到系统凭据库", "M2", parent=gitlab_sub)
     p.set_defaults(handler=_gitlab_login)
+    p = gitlab_sub.add_parser(
+        "check", help="只读检查 GitLab 连接、令牌权限和接口", description="只读检查"
+    )
+    p.add_argument("--sample", type=int, default=20, help="抽查多少个工程（默认 20）")
+    p.set_defaults(handler=_gitlab_check)
 
     git = sub.add_parser("git", help="Git 同步的辅助命令")
     git_sub = git.add_subparsers(dest="git_command", metavar="<子命令>", required=True)
@@ -346,6 +353,28 @@ def _git_warm(args: argparse.Namespace) -> int:
     for path, reason in result.failed.items():
         print(f"  失败：{path}：{reason}", file=sys.stderr)
     return EXIT_ERROR if result.failed else EXIT_OK
+
+
+def _gitlab_check(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    ctx = open_context(config)
+    try:
+        token = load_token(ctx.config.url)
+        assert token is not None
+        results = run_checks(
+            ctx.client,
+            ctx.runner,
+            ctx.clone_url,
+            LfsClient(ctx.config.url, token),
+            sample=args.sample,
+            base_url=ctx.config.url,
+        )
+    finally:
+        ctx.close()
+    marks = {Status.OK: "通过", Status.WARN: "警告", Status.FAIL: "失败"}
+    for r in results:
+        print(f"[{marks[r.status]}] {r.name}：{r.detail}")
+    return EXIT_ERROR if any(r.status is Status.FAIL for r in results) else EXIT_OK
 
 
 def _not_implemented(command: str, milestone: str) -> Handler:
