@@ -21,6 +21,7 @@ from typing import Any
 from airtap_sync import paths
 from airtap_sync.agent.controller import AgentController, Status
 from airtap_sync.progress import ProgressEvent
+from airtap_sync.resources import icon_png
 
 log = logging.getLogger(__name__)
 
@@ -66,17 +67,33 @@ def open_path(path: Path) -> None:
         log.warning("cannot open %s", path, exc_info=True)
 
 
-def make_icons(color_by_status: dict[Status, str]) -> dict[Status, Any]:
-    """One round icon per status, drawn with Pillow."""
+def make_icons(
+    color_by_status: dict[Status, str], png: Path | None = None
+) -> dict[Status, Any]:
+    """One tray icon per status: the application icon with a coloured status dot.
+
+    Without the bundled PNG a plain coloured disc is drawn instead.
+    """
     from PIL import Image, ImageDraw
+
+    base = None
+    if png is not None:
+        try:
+            base = Image.open(png).convert("RGBA").resize((64, 64), Image.LANCZOS)
+        except OSError:
+            log.warning("cannot read the icon %s", png, exc_info=True)
 
     icons = {}
     for status, color in color_by_status.items():
-        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((4, 4, 60, 60), fill=color)
-        draw.arc((16, 16, 48, 48), 40, 300, fill="white", width=5)
-        draw.polygon([(40, 12), (52, 24), (36, 26)], fill="white")
+        if base is None:
+            image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            ImageDraw.Draw(image).ellipse((4, 4, 60, 60), fill=color)
+        else:
+            image = base.copy()
+            if status is not Status.IDLE:  # idle shows the plain icon
+                ImageDraw.Draw(image).ellipse(
+                    (38, 38, 62, 62), fill=color, outline="white", width=3
+                )
         icons[status] = image
     return icons
 
@@ -118,7 +135,7 @@ class GuiUi:
         root = tk.Tk()
         root.withdraw()
         window = _ProgressWindow(tk, ttk, root)
-        icons = make_icons(STATUS_COLORS)
+        icons = make_icons(STATUS_COLORS, icon_png())
 
         def post(*item: Any) -> Callable[..., None]:
             return lambda *_args: self._queue.put(item)
@@ -216,6 +233,16 @@ class _ProgressWindow:
         self.window.title("airtap-sync")
         self.window.geometry("460x150")
         self.window.resizable(False, False)
+        self._icon = (
+            None  # keep a reference: Tk drops images that are garbage collected
+        )
+        png = icon_png()
+        if png is not None:
+            try:
+                self._icon = tk.PhotoImage(file=str(png)).subsample(8)  # 512 -> 64
+                self.window.iconphoto(True, self._icon)
+            except tk.TclError:
+                log.debug("cannot set the window icon", exc_info=True)
         self.window.protocol("WM_DELETE_WINDOW", self.hide)
         self.status = tk.StringVar(value="")
         self.detail = tk.StringVar(value="")

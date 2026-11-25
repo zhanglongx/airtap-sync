@@ -201,7 +201,23 @@ B 上的改动要到第二天早上在 A 上插入 U 盘时才会到达 A，这�
 - **打包时报 `Tk data/library directory ... could not be collected`**：多半是环境变量 `TCL_LIBRARY` 或 `TK_LIBRARY` 还指向一个已经卸载的 Python（路径里的版本和你正在用的不一致）。`scripts/build_exe.py` 现在会自动忽略它们；也可以在 PowerShell 里 `Remove-Item Env:TCL_LIBRARY, Env:TK_LIBRARY` 后再试。如果这个 Python 的 tkinter 本身不可用，打包会自动去掉它，后台程序就只能用文本模式。
 - **托盘图标不出现**：Windows 上确认安装了 `[tray]` 组件；Linux 的 GNOME 需要 AppIndicator 扩展。没有托盘时程序会自动改用文本模式，用 `--no-gui` 也可以强制文本模式。
 
-## 开发
+## 开发和打包
+
+```bash
+make            # 一条命令打包：首次会自动创建 .venv、安装依赖，然后生成 dist/airtap-sync/ 和压缩包
+make test       # 测试
+make check      # 代码检查 + 测试
+make format     # 自动修复并格式化
+make clean      # 删除 build/、dist/ 和各种缓存
+make distclean  # 同时删除 .venv
+make help       # 列出所有目标
+```
+
+Windows 请在 Git Bash（或其他带 `sh` 的环境）里运行 GNU make；没有 make 时，直接 `python scripts/build_exe.py` 效果相同。`PYTHON=<解释器>` 指定用哪个 Python 创建 `.venv`，`PY=<解释器>` 则直接使用该解释器、跳过 `.venv`（CI 里常用）。
+
+打包产物里，Windows 的两个 exe 都带有应用图标（`src/airtap_sync/assets/icon.png`，构建时自动转成多尺寸 `.ico` 嵌入）；托盘图标和进度窗口也用同一张图。Linux 的可执行文件格式不能内嵌图标，所以只在开机自启条目（`.desktop`）里引用这张 PNG。
+
+手工搭环境：
 
 ```bash
 python -m venv .venv
@@ -209,7 +225,7 @@ python -m venv .venv
 .venv/bin/pytest                 # 测试
 .venv/bin/ruff check .           # 代码检查（B, E, F, I, UP）
 .venv/bin/ruff format .
-python scripts/build_exe.py      # 在 Windows 上打包 exe（PyInstaller）
+python scripts/build_exe.py      # 打包 exe（PyInstaller）
 ```
 
 测试里用进程内的模拟 GitLab 接口和真实的 git 仓库做端到端验证，不需要真实的 GitLab。`scripts/gitlab_stats.py` 是一个只读的小脚本，用来统计一个 GitLab 的工程数量和代码规模。

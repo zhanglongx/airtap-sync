@@ -14,6 +14,7 @@ from airtap_sync.agent.gui import GuiUi, gui_available, make_icons
 from airtap_sync.agent.lock import SingleInstance
 from airtap_sync.cli import EXIT_ERROR, EXIT_OK, main
 from airtap_sync.progress import ProgressEvent, Stage
+from airtap_sync.resources import icon_png
 
 # ----- app ---------------------------------------------------------------------
 
@@ -80,11 +81,20 @@ def test_gui_availability_never_raises() -> None:
 
 
 def test_icons_exist_for_every_status() -> None:
-    PIL = pytest.importorskip("PIL")  # noqa: N806
-    assert PIL
-    icons = make_icons(gui.STATUS_COLORS)
+    pytest.importorskip("PIL")
+    icons = make_icons(gui.STATUS_COLORS, icon_png())
     assert set(icons) == set(Status)
     assert all(img.size == (64, 64) for img in icons.values())
+    # Each status is told apart by its dot; idle is the plain icon.
+    assert icons[Status.OK].tobytes() != icons[Status.ERROR].tobytes()
+    assert icons[Status.IDLE].tobytes() != icons[Status.OK].tobytes()
+
+
+def test_icons_fall_back_to_discs_without_the_png() -> None:
+    pytest.importorskip("PIL")
+    icons = make_icons(gui.STATUS_COLORS, None)
+    assert set(icons) == set(Status)
+    assert icons[Status.OK].getpixel((32, 32)) != icons[Status.ERROR].getpixel((32, 32))
 
 
 def test_confirm_blocks_until_the_main_thread_answers() -> None:

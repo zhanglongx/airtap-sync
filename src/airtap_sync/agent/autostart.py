@@ -7,6 +7,8 @@ import shlex
 import sys
 from pathlib import Path
 
+from airtap_sync.resources import icon_png
+
 APP_KEY = "airtap-sync"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -38,13 +40,15 @@ def _desktop_file() -> Path:
 
 
 def _desktop_entry(command: list[str]) -> str:
+    icon = icon_png()
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=airtap-sync\n"
         "Comment=Sync directories and Git repositories via USB drive\n"
         f"Exec={shlex.join(command)}\n"
-        "X-GNOME-Autostart-enabled=true\n"
+        + (f"Icon={icon}\n" if icon else "")
+        + "X-GNOME-Autostart-enabled=true\n"
     )
 
 

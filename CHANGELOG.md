@@ -23,3 +23,5 @@
 - M5 后台常驻程序：`airtap-sync agent`（托盘图标 + 进度窗口，没有显示环境或缺少托盘组件时自动改为文本模式）、按 pair_id 检测配对 U 盘并自动同步（可配置为先询问）、暂停/立即同步/打开报告和日志目录、单实例锁、`autostart enable|disable|status`（Windows 注册表 Run 键 / Linux autostart）；同步入口抽成 `execute_sync` 供命令行和后台程序共用；托盘依赖放在可选项 `airtap-sync[tray]`
 - M6 打包与文档：PyInstaller 打包脚本（`scripts/build_exe.py`，一个目录里两个程序：命令行 `airtap-sync` 和无窗口的后台程序 `airtap-sync-agent`）、GitHub Actions 打包校验和发布流程（推送 `v*` 标签时在 Windows 上构建并上传压缩包）、frozen 环境下开机自启优先使用无窗口的程序；重写 README（原理、安装、配置、初始化流程、日常使用、冲突与恢复、常见问题）；已在 Linux 上构建并冒烟测试通过
 - 修复打包：忽略指向已卸载 Python 的 `TCL_LIBRARY`/`TK_LIBRARY`；tkinter 不可用时自动从打包中排除；Windows 专用的隐藏导入只在 Windows 上添加
+- 新增 `Makefile`：`make` 一条命令完成打包（自动创建 .venv 并安装依赖），另有 `test`、`lint`、`format`、`check`、`icon`、`version`、`clean`、`distclean`、`help` 等目标；新增 `scripts/clean.py`、`scripts/make_icon.py`
+- 应用图标：`src/airtap_sync/assets/icon.png` 随包发布；打包时转成多尺寸 `.ico` 嵌入两个 Windows exe；托盘图标改用该图并在角上加状态色点，进度窗口也使用它；Linux 的开机自启条目引用该 PNG（ELF 可执行文件不能内嵌图标）

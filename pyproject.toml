@@ -24,6 +24,7 @@ tray = [
 ]
 build = [
     "pyinstaller>=6.0",
+    "Pillow>=10.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -41,6 +42,9 @@ airtap-sync-agent = "airtap_sync.agent.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+airtap_sync = ["assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

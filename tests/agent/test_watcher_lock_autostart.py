@@ -10,6 +10,7 @@ from airtap_sync.agent import autostart
 from airtap_sync.agent.lock import SingleInstance
 from airtap_sync.agent.watcher import find_volumes
 from airtap_sync.medium.volume import init_volume
+from airtap_sync.resources import icon_png
 
 
 def test_find_volumes_matches_by_pair_id(tmp_path: Path) -> None:
@@ -54,6 +55,7 @@ def test_autostart_desktop_entry(
     assert entry == tmp_path / "autostart" / "airtap-sync.desktop"
     text = entry.read_text(encoding="utf-8")
     assert "Exec=/usr/bin/python3 -m airtap_sync agent" in text
+    assert f"Icon={icon_png()}" in text
     assert autostart.is_enabled()
     assert autostart.disable()
     assert not entry.exists()

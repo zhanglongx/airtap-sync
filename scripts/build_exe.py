@@ -17,6 +17,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for make_icon
 
 
 # Stale Tcl/Tk variables (e.g. left over from an uninstalled Python) make
@@ -45,6 +46,10 @@ def main() -> int:
         # The console program does not need Tk; the agent then runs in text mode.
         print("警告：tkinter 不可用，打包时不包含它（后台程序将只能用文本模式）")
         env["AIRTAP_NO_TK"] = "1"
+    if sys.platform == "win32":
+        from make_icon import make_ico
+
+        env["AIRTAP_ICON"] = str(make_ico())
     spec = ROOT / "packaging" / "airtap-sync.spec"
     subprocess.run(
         [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(spec)],
