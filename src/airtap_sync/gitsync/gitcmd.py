@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,6 +83,7 @@ class GitRunner:
         cwd: Path | None = None,
         check: bool = True,
         extra_env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = [self.git, *args]
         log.debug("git %s", " ".join(args))
@@ -92,6 +93,7 @@ class GitRunner:
                 cwd=cwd,
                 env=self._env(extra_env),
                 capture_output=True,
+                input=input_text,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -151,6 +153,42 @@ class GitRunner:
             oid, _, name = line.partition(" ")
             refs[name] = oid
         return refs
+
+    def existing_objects(self, repo: Path, oids: Iterable[str]) -> set[str]:
+        """The subset of ``oids`` that exist in ``repo``."""
+        wanted = sorted(set(oids))
+        if not wanted:
+            return set()
+        out = self.run(
+            ["cat-file", "--batch-check"], cwd=repo, input_text="\n".join(wanted) + "\n"
+        ).stdout
+        present = set()
+        for line in out.splitlines():
+            oid, _, rest = line.partition(" ")
+            if not rest.startswith("missing"):
+                present.add(oid)
+        return present
+
+    def is_ancestor(self, repo: Path, ancestor: str, descendant: str) -> bool:
+        """Whether ``ancestor`` is reachable from ``descendant`` (or equal)."""
+        proc = self.run(
+            ["merge-base", "--is-ancestor", ancestor, descendant], cwd=repo, check=False
+        )
+        if proc.returncode in (0, 1):
+            return proc.returncode == 0
+        raise GitError(f"git merge-base 失败：{proc.stderr.strip()}", proc.returncode)
+
+    def update_refs(self, repo: Path, updates: Mapping[str, str | None]) -> None:
+        """Set (or, for ``None``, delete) several refs in one transaction."""
+        if not updates:
+            return
+        lines = ["start"]
+        for ref, oid in updates.items():
+            lines.append(f"delete {ref}" if oid is None else f"update {ref} {oid}")
+        lines += ["prepare", "commit"]
+        self.run(
+            ["update-ref", "--stdin"], cwd=repo, input_text="\n".join(lines) + "\n"
+        )
 
 
 def parse_ls_remote(output: str) -> RefMap:

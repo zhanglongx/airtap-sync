@@ -39,12 +39,17 @@ class Remote:
         return self.bare.as_uri()
 
     def commit(self, filename: str, content: str, branch: str = "main") -> str:
-        """Commit a file on ``branch`` (created from the current HEAD) and push."""
-        branches = git("branch", "--list", branch, cwd=self.work)
-        if not branches:
-            git("checkout", "-q", "-b", branch, cwd=self.work)
+        """Commit a file on ``branch`` and push.
+
+        The work clone is first brought up to date with the bare repo, since the
+        sync under test changes the bare repo behind the clone's back. A new
+        branch starts from the current HEAD.
+        """
+        git("fetch", "-q", "--prune", "origin", cwd=self.work)
+        if git("branch", "-r", "--list", f"origin/{branch}", cwd=self.work):
+            git("checkout", "-q", "-B", branch, f"origin/{branch}", cwd=self.work)
         else:
-            git("checkout", "-q", branch, cwd=self.work)
+            git("checkout", "-q", "-B", branch, cwd=self.work)
         (self.work / filename).write_text(content, encoding="utf-8")
         git("add", filename, cwd=self.work)
         git("commit", "-q", "-m", f"{filename}: {content}", cwd=self.work)
