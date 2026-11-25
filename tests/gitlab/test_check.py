@@ -182,3 +182,53 @@ def test_non_members_are_read_only_for_non_admins(
     result = checks(fake_gitlab, populated)["项目权限"]
     assert result.status is Status.WARN
     assert "2/2" in result.detail and "非成员 2" in result.detail
+
+
+def test_namespace_table_breaks_down_mixed_namespaces() -> None:
+    from airtap_sync.gitlab.check import namespace_table
+    from airtap_sync.gitlab.projects import parse_project
+
+    def project(path: str, level: int | None):
+        perms = None if level is None else {"group_access": {"access_level": level}}
+        return parse_project(
+            {"id": 1, "path": "x", "path_with_namespace": path, "permissions": perms}
+        )
+
+    projects = [
+        project("ZH/mine/a", 50),
+        project("ZH/mine/b", 50),
+        project("ZH/other/c", None),
+        project("ZH/top", None),
+        project("Tegra/x", None),
+        project("own/y", 40),
+    ]
+    lines = namespace_table(projects, is_admin=False)
+    assert lines[0] == "ZH/*  可写 2 / 共 4"  # most writable first
+    assert "    ZH/mine/*  可写 2 / 共 2" in lines
+    assert not any("ZH/other" in line for line in lines)  # nothing writable there
+    assert "own/*  可写 1 / 共 1" in lines
+    assert "Tegra/*  可写 0 / 共 1" in lines
+    assert lines.index("own/*  可写 1 / 共 1") < lines.index("Tegra/*  可写 0 / 共 1")
+
+
+def test_cli_check_namespaces_flag(
+    tmp_path: Path,
+    fake_gitlab: FakeGitLab,
+    populated: dict[str, Remote],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'side = "A"\npair_id = "p"\n[gitlab]\nurl = "{fake_gitlab.url}"\n'
+        f'[gitlab.cache]\ndir = "{tmp_path / "cache"}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(context, "load_token", lambda url, s=None: "secret")
+    monkeypatch.setattr("airtap_sync.cli.load_token", lambda url, s=None: "secret")
+    monkeypatch.setattr(GitContext, "clone_url", lambda self, path: populated[path].url)
+    fake_gitlab.is_admin = False
+    main(["--config", str(config), "gitlab", "check", "--namespaces"])
+    out = capsys.readouterr().out
+    assert "各命名空间中本账号可推送的工程数" in out
+    assert "team/*  可写 0 / 共 2" in out

@@ -109,6 +109,40 @@ _LEVELS = [
 ]
 
 
+def namespace_table(
+    projects: list[Project], is_admin: bool, depth: int = 2
+) -> list[str]:
+    """Writable/total project counts per namespace, for choosing ``include_projects``.
+
+    Top-level namespaces come first; a namespace where only some projects are
+    writable is broken down one level further so the writable part can be named.
+    """
+    totals: dict[str, list[int]] = {}
+    for p in projects:
+        parts = p.full_path.split("/")[:-1] or [p.full_path]
+        writable = p.can_push(is_admin)
+        for level in range(1, min(depth, len(parts)) + 1):
+            entry = totals.setdefault("/".join(parts[:level]), [0, 0])
+            entry[0] += 1
+            entry[1] += writable
+    lines = []
+    tops = sorted(
+        (k for k in totals if "/" not in k), key=lambda k: (-totals[k][1], k.lower())
+    )
+    for top in tops:
+        total, writable = totals[top]
+        lines.append(f"{top}/*  可写 {writable} / 共 {total}")
+        if 0 < writable < total:
+            subs = sorted(
+                (k for k in totals if k.startswith(top + "/") and totals[k][1] > 0),
+                key=lambda k: (-totals[k][1], k.lower()),
+            )
+            for sub in subs[:10]:
+                t, w = totals[sub]
+                lines.append(f"    {sub}/*  可写 {w} / 共 {t}")
+    return lines
+
+
 def _check_access(projects: list[Project], is_admin: bool) -> CheckResult:
     """How much the token's user may do in the listed projects."""
     name = "项目权限"

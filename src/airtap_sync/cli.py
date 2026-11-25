@@ -17,11 +17,11 @@ from pathlib import Path
 
 from airtap_sync import __version__, paths
 from airtap_sync.config import Config, ConfigError, load_config
-from airtap_sync.gitlab.check import Status, run_checks
+from airtap_sync.gitlab.check import Status, namespace_table, run_checks
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
 from airtap_sync.gitlab.credentials import default_token_store, load_token
 from airtap_sync.gitlab.lfs import LfsClient
-from airtap_sync.gitlab.projects import current_user
+from airtap_sync.gitlab.projects import current_user, list_projects
 from airtap_sync.gitsync.baseline import (
     Baseline,
     BaselineError,
@@ -108,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         "check", help="只读检查 GitLab 连接、令牌权限和接口", description="只读检查"
     )
     p.add_argument("--sample", type=int, default=20, help="抽查多少个工程（默认 20）")
+    p.add_argument(
+        "--namespaces",
+        action="store_true",
+        help="按命名空间列出可写/总数，便于选择 include_projects",
+    )
     p.set_defaults(handler=_gitlab_check)
 
     git = sub.add_parser("git", help="Git 同步的辅助命令")
@@ -368,8 +373,22 @@ def _gitlab_check(args: argparse.Namespace) -> int:
             base_url=ctx.config.url,
             in_scope=ctx.in_scope,
         )
+        table: list[str] = []
+        if args.namespaces:
+            projects = [
+                p for p in list_projects(ctx.client) if ctx.in_scope(p.full_path)
+            ]
+            table = namespace_table(projects, current_user(ctx.client).is_admin)
+    except GitLabError as e:
+        print(f"检查失败：{e}", file=sys.stderr)
+        return EXIT_ERROR
     finally:
         ctx.close()
+    if table:
+        print("各命名空间中本账号可推送的工程数：")
+        for line in table:
+            print(f"  {line}")
+        print()
     marks = {Status.OK: "通过", Status.WARN: "警告", Status.FAIL: "失败"}
     for r in results:
         print(f"[{marks[r.status]}] {r.name}：{r.detail}")
