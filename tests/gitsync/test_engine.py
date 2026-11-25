@@ -354,3 +354,21 @@ def test_non_members_cannot_receive_unless_admin(sites: Sites) -> None:
     sites.run("A")
     sites.run("B")
     assert sites["B"].heads("team/app") != before
+
+
+def test_only_included_projects_are_synced(
+    tmp_path: Path, fake_gitlab: FakeGitLab, gitlab_b: FakeGitLab
+) -> None:
+    from dataclasses import replace
+
+    sites = Sites(tmp_path, fake_gitlab, gitlab_b)
+    for side in "AB":
+        site = sites[side]
+        site.ctx.config = replace(site.config, include_projects=("zh/*",))
+    sites["A"].add_project("zh/mine").commit("f", "1")
+    sites["A"].add_project("other/theirs").commit("f", "2")
+
+    sites.run("A")
+    report = sites.run("B")
+    assert report.created == ["zh/mine"]
+    assert sites["B"].project("other/theirs") is None

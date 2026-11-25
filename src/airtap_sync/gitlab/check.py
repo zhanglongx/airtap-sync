@@ -39,6 +39,7 @@ def run_checks(
     *,
     sample: int = 20,
     base_url: str,
+    in_scope: Callable[[str], bool] = lambda _path: True,
 ) -> list[CheckResult]:
     """Run every check; a failing one never stops the others."""
     results: list[CheckResult] = []
@@ -78,17 +79,18 @@ def run_checks(
 
     started = time.monotonic()
     try:
-        projects = list_projects(client)
+        everything = list_projects(client)
     except GitLabError as e:
         add("列出工程", Status.FAIL, str(e))
         return results
+    projects = [p for p in everything if in_scope(p.full_path)]
     elapsed = time.monotonic() - started
     total = sum(p.repository_size for p in projects)
     add(
         "列出工程",
         Status.OK if projects else Status.WARN,
-        f"{len(projects)} 个工程，代码共 {total / 2**30:.1f} GiB，"
-        f"用时 {elapsed:.1f} 秒",
+        f"同步范围内 {len(projects)} 个工程（GitLab 上共 {len(everything)} 个），"
+        f"代码共 {total / 2**30:.1f} GiB，用时 {elapsed:.1f} 秒",
     )
     if not projects:
         return results

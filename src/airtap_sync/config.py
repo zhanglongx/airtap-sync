@@ -95,6 +95,7 @@ class GitLabCacheConfig:
 class GitLabConfig:
     url: str
     cache: GitLabCacheConfig
+    include_projects: tuple[str, ...] = ()
     exclude_projects: tuple[str, ...] = ()
     include_branches: tuple[str, ...] = ()
     exclude_branches: tuple[str, ...] = ()
@@ -274,6 +275,7 @@ def _parse_gitlab(table: dict[str, Any]) -> GitLabConfig:
     result = GitLabConfig(
         url=url.rstrip("/"),
         cache=cache,
+        include_projects=_pop_str_list(table, "include_projects", "gitlab"),
         exclude_projects=_pop_str_list(table, "exclude_projects", "gitlab"),
         include_branches=_pop_str_list(table, "include_branches", "gitlab"),
         exclude_branches=_pop_str_list(table, "exclude_branches", "gitlab"),

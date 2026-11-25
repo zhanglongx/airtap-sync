@@ -170,3 +170,23 @@ def test_non_admin_cannot_create_in_user_namespace_or_top_level_group(
         **kwargs,
     )
     assert project.full_path == "team/sub/app"
+
+
+def test_project_in_own_personal_namespace_needs_no_admin(
+    client: GitLabClient, fake_gitlab: FakeGitLab
+) -> None:
+    fake_gitlab.is_admin = False
+    fake_gitlab.username = "zhanglx"
+    project = create_project(
+        client,
+        full_path="zhanglx/notes",
+        name="notes",
+        description="",
+        visibility="private",
+        namespace_kind="user",
+        namespace_path="zhanglx",
+        lfs_enabled=False,
+        own_username="zhanglx",
+    )
+    assert project.full_path == "zhanglx/notes"
+    assert fake_gitlab.bodies[-1][0] == "/api/v4/projects"

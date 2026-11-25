@@ -26,7 +26,7 @@ from pathlib import Path
 
 from airtap_sync.config import Side, TransferConfig
 from airtap_sync.gitlab.client import GitLabError
-from airtap_sync.gitlab.projects import Project, current_user, is_excluded
+from airtap_sync.gitlab.projects import Project, current_user
 from airtap_sync.gitsync.bundle import MissingPrerequisites
 from airtap_sync.gitsync.cache import repo_key
 from airtap_sync.gitsync.context import GitContext
@@ -207,11 +207,10 @@ class _Run:
         return Received.load(resolve_relpath(self.peer_dir, RECEIVED))
 
     def _peer_records(self, peer: ProjectsManifest) -> dict[str, ProjectRecord]:
-        excluded = self.ctx.config.exclude_projects
         flt = self.ctx.ref_filter
         records = {}
         for key, rec in peer.projects.items():
-            if is_excluded(rec.path, excluded):
+            if not self.ctx.in_scope(rec.path):
                 continue
             refs = None if rec.refs is None else flt.apply(rec.refs)
             records[key] = ProjectRecord(**{**rec.to_dict(), "refs": refs})
@@ -258,6 +257,7 @@ class _Run:
         except GitLabError:
             return  # listing projects worked; do not fail the run over this
         self.is_admin = user.is_admin
+        self.ctx.username = user.username
         if not user.is_admin:
             self.report.warnings.append(
                 f"当前账号 {user.username} 不是管理员：只能同步有权限看到、"

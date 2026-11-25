@@ -72,6 +72,7 @@ def sync_project(
                 namespace_kind=peer.namespace_kind,
                 namespace_path=peer.namespace_path,
                 lfs_enabled=peer.lfs_enabled,
+                own_username=ctx.username,
             )
             local_path = created.full_path
             result.path = local_path

@@ -6,6 +6,7 @@ from airtap_sync.gitlab.client import GitLabClient
 from airtap_sync.gitlab.projects import (
     current_user,
     filter_projects,
+    in_scope,
     is_excluded,
     list_projects,
     parse_project,
@@ -86,3 +87,50 @@ def test_current_user(fake_gitlab: FakeGitLab) -> None:
     fake_gitlab.is_admin = False
     user = current_user(GitLabClient(fake_gitlab.url, "secret"))
     assert (user.username, user.is_admin) == ("syncbot", False)
+
+
+@pytest.mark.parametrize(
+    ("path", "include", "exclude", "expected"),
+    [
+        ("zh/app", ["zh/*"], [], True),
+        ("zh/sub/app", ["zh/*"], [], True),
+        ("other/app", ["zh/*"], [], False),
+        ("ZH/App", ["zh/*"], [], True),
+        ("zh/tmp/x", ["zh/*"], ["zh/tmp/*"], False),  # exclude wins
+        ("any/thing", [], [], True),
+        ("any/thing", [], ["any/*"], False),
+    ],
+)
+def test_in_scope(path: str, include: list, exclude: list, expected: bool) -> None:
+    assert in_scope(path, include, exclude) is expected
+
+
+def test_filter_projects_with_include(fake_gitlab: FakeGitLab) -> None:
+    for i, path in enumerate(["zh/a", "zh/b", "other/c"], start=1):
+        fake_gitlab.add_project(i, path)
+    projects = list_projects(GitLabClient(fake_gitlab.url, "secret"))
+    kept = filter_projects(projects, [], ["zh/*"])
+    assert [p.full_path for p in kept] == ["zh/a", "zh/b"]
+
+
+def test_access_level_is_the_best_of_project_and_group_roles() -> None:
+    def project(perms: object):
+        return parse_project(
+            {
+                "id": 1,
+                "path": "x",
+                "path_with_namespace": "g/x",
+                "permissions": perms,
+            }
+        )
+
+    both = project(
+        {"project_access": {"access_level": 20}, "group_access": {"access_level": 50}}
+    )
+    assert both.access_level == 50
+    assert both.can_push()
+    assert project({"project_access": None, "group_access": None}).access_level is None
+    assert project(None).access_level is None
+    assert not project(None).can_push()
+    assert project(None).can_push(is_admin=True)
+    assert not project({"project_access": {"access_level": 20}}).can_push()

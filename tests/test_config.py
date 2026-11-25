@@ -188,3 +188,20 @@ def test_paths_expand_user_and_environment(
     assert config.gitlab is not None
     assert config.gitlab.cache.dir == tmp_path / ".airtap-cache"
     assert config.folders["docs"].path == tmp_path / "data" / "docs"
+
+
+def test_include_projects_option() -> None:
+    config = parse_config(
+        {
+            **MINIMAL,
+            "gitlab": {
+                "url": "http://g",
+                "cache": {"dir": "/c"},
+                "include_projects": ["zh/*"],
+                "exclude_projects": ["zh/tmp/*"],
+            },
+        }
+    )
+    assert config.gitlab is not None
+    assert config.gitlab.include_projects == ("zh/*",)
+    assert config.gitlab.exclude_projects == ("zh/tmp/*",)

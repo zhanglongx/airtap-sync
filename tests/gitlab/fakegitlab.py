@@ -196,7 +196,9 @@ class FakeGitLab:
             return self._send(404, {"message": "404 Not Found"})
 
         def _create_project(self: Any, path: str, body: dict[str, Any]) -> None:
-            if path.endswith("/projects"):
+            if path.endswith("/projects") and "namespace_id" not in body:
+                kind, ns_path = "user", fake.username  # the caller's own namespace
+            elif path.endswith("/projects"):
                 ns = next(
                     (
                         g

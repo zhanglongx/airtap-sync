@@ -17,7 +17,8 @@ part_size = "512MiB"              # 大文件切片大小
 
 [gitlab]
 url = "http://gitlab-a.example.com"   # 本网络 GitLab 的地址，不要带结尾的 /
-# exclude_projects = ["sandbox/*"]    # 不同步的工程（按完整路径的通配符）
+# include_projects = ["zh/*"]         # 只同步这些工程（按完整路径的通配符）；留空表示全部
+# exclude_projects = ["sandbox/*"]    # 不同步的工程；优先于 include_projects
 # include_branches = []               # 只同步这些分支；留空表示全部
 # exclude_branches = ["wip/*"]        # 不同步的分支
 # ci_skip = true                      # 推送时附带 ci.skip，避免触发对方的 CI

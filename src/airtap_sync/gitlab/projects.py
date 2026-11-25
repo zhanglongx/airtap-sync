@@ -112,11 +112,26 @@ def is_excluded(full_path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, p.lower()) for p in patterns)
 
 
+def in_scope(
+    full_path: str, include: Iterable[str] = (), exclude: Iterable[str] = ()
+) -> bool:
+    """Whether a project takes part in the sync.
+
+    With ``include`` patterns only matching projects do; ``exclude`` always wins.
+    """
+    include = tuple(include)
+    if include and not is_excluded(full_path, include):
+        return False
+    return not is_excluded(full_path, exclude)
+
+
 def filter_projects(
-    projects: Iterable[Project], exclude_patterns: Iterable[str]
+    projects: Iterable[Project],
+    exclude_patterns: Iterable[str],
+    include_patterns: Iterable[str] = (),
 ) -> list[Project]:
-    patterns = tuple(exclude_patterns)
-    return [p for p in projects if not is_excluded(p.full_path, patterns)]
+    include, exclude = tuple(include_patterns), tuple(exclude_patterns)
+    return [p for p in projects if in_scope(p.full_path, include, exclude)]
 
 
 @dataclass(frozen=True)
@@ -198,8 +213,14 @@ def create_project(
     namespace_kind: str,
     namespace_path: str,
     lfs_enabled: bool,
+    own_username: str | None = None,
 ) -> Project:
-    """Create an empty project at ``full_path`` (groups are created as needed)."""
+    """Create an empty project at ``full_path`` (groups are created as needed).
+
+    ``own_username`` is the token's user: a project in that user's own personal
+    namespace can be created by anyone, whereas one in somebody else's personal
+    namespace needs an admin.
+    """
     path = full_path.rsplit("/", 1)[-1]
     body: dict[str, Any] = {
         "name": name,
@@ -209,7 +230,9 @@ def create_project(
         "lfs_enabled": lfs_enabled,
         "initialize_with_readme": False,
     }
-    if namespace_kind == "user":
+    if namespace_kind == "user" and own_username == namespace_path:
+        raw = client.post("/projects", body)  # lands in the caller's namespace
+    elif namespace_kind == "user":
         user_id = find_user_id(client, namespace_path)
         try:
             raw = client.post(f"/projects/user/{user_id}", body)

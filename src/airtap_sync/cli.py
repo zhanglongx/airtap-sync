@@ -21,7 +21,7 @@ from airtap_sync.gitlab.check import Status, run_checks
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
 from airtap_sync.gitlab.credentials import default_token_store, load_token
 from airtap_sync.gitlab.lfs import LfsClient
-from airtap_sync.gitlab.projects import current_user, filter_projects, list_projects
+from airtap_sync.gitlab.projects import current_user
 from airtap_sync.gitsync.baseline import (
     Baseline,
     BaselineError,
@@ -325,9 +325,7 @@ def _git_warm(args: argparse.Namespace) -> int:
     config = load_effective_config(args.config)
     ctx = open_context(config)
     try:
-        projects = filter_projects(
-            list_projects(ctx.client), ctx.config.exclude_projects
-        )
+        projects = ctx.discover()
         progress = ConsoleProgress()
 
         def on_progress(done: int, total: int, path: str) -> None:
@@ -368,6 +366,7 @@ def _gitlab_check(args: argparse.Namespace) -> int:
             LfsClient(ctx.config.url, token),
             sample=args.sample,
             base_url=ctx.config.url,
+            in_scope=ctx.in_scope,
         )
     finally:
         ctx.close()

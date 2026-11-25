@@ -9,7 +9,12 @@ from airtap_sync import paths
 from airtap_sync.config import Config, ConfigError, GitLabConfig, SafetyConfig
 from airtap_sync.gitlab.client import GitLabClient
 from airtap_sync.gitlab.credentials import TokenStore, load_token
-from airtap_sync.gitlab.projects import Project, filter_projects, list_projects
+from airtap_sync.gitlab.projects import (
+    Project,
+    filter_projects,
+    in_scope,
+    list_projects,
+)
 from airtap_sync.gitsync.cache import RepoCache
 from airtap_sync.gitsync.gitcmd import GitAuth, GitRunner
 from airtap_sync.gitsync.refs import RefFilter
@@ -25,6 +30,7 @@ class GitContext:
     cache: RepoCache
     state: GitState
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    username: str | None = None  # the token's user, once known
 
     @property
     def max_deletions(self) -> int:
@@ -40,7 +46,16 @@ class GitContext:
 
     def discover(self) -> list[Project]:
         """Every project on the local GitLab that is not excluded by config."""
-        return filter_projects(list_projects(self.client), self.config.exclude_projects)
+        return filter_projects(
+            list_projects(self.client),
+            self.config.exclude_projects,
+            self.config.include_projects,
+        )
+
+    def in_scope(self, full_path: str) -> bool:
+        return in_scope(
+            full_path, self.config.include_projects, self.config.exclude_projects
+        )
 
     def scan(
         self,
