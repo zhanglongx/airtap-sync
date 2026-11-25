@@ -129,3 +129,44 @@ def test_default_branch_and_archive(
     archive_project(client, 5)
     assert raw["default_branch"] == "develop"
     assert raw["archived"] is True
+
+
+def test_non_admin_cannot_create_in_user_namespace_or_top_level_group(
+    client: GitLabClient, fake_gitlab: FakeGitLab
+) -> None:
+    from airtap_sync.gitlab.client import GitLabAuthError
+
+    fake_gitlab.is_admin = False
+    fake_gitlab.users["alice"] = 7
+    kwargs = {
+        "name": "n",
+        "description": "",
+        "visibility": "private",
+        "lfs_enabled": False,
+    }
+    with pytest.raises(GitLabAuthError, match="需要管理员权限"):
+        create_project(
+            client,
+            full_path="alice/notes",
+            namespace_kind="user",
+            namespace_path="alice",
+            **kwargs,
+        )
+    with pytest.raises(GitLabError, match="无法创建群组 neworg"):
+        create_project(
+            client,
+            full_path="neworg/app",
+            namespace_kind="group",
+            namespace_path="neworg",
+            **kwargs,
+        )
+    # Subgroups of an existing group are fine for a non-admin.
+    fake_gitlab.add_group("team")
+    project = create_project(
+        client,
+        full_path="team/sub/app",
+        namespace_kind="group",
+        namespace_path="team/sub",
+        **kwargs,
+    )
+    assert project.full_path == "team/sub/app"

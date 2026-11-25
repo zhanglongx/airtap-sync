@@ -60,7 +60,12 @@ def run_checks(
     if user.is_admin:
         add("管理员权限", Status.OK, "可以列出全部工程、在个人命名空间下建工程")
     else:
-        add("管理员权限", Status.FAIL, "不是管理员：看不到全部工程，也无法代建个人工程")
+        add(
+            "管理员权限",
+            Status.WARN,
+            "不是管理员：只能同步该账号看得到、且有推送权限的工程；"
+            "不能在别人的个人命名空间下建工程，也通常不能创建顶层群组",
+        )
 
     try:
         info = client.get("/version")
@@ -87,8 +92,44 @@ def run_checks(
     if not projects:
         return results
 
+    results.append(_check_access(projects, user.is_admin))
     results += _check_git(projects, runner, clone_url, lfs, sample, base_url)
     return results
+
+
+_LEVELS = [
+    (50, "Owner"),
+    (40, "Maintainer"),
+    (30, "Developer"),
+    (20, "Reporter"),
+    (10, "Guest"),
+]
+
+
+def _check_access(projects: list[Project], is_admin: bool) -> CheckResult:
+    """How much the token's user may do in the listed projects."""
+    name = "项目权限"
+    counts: dict[str, int] = {}
+    readonly: list[str] = []
+    for p in projects:
+        label = (
+            "未知"
+            if p.access_level is None
+            else next((n for lv, n in _LEVELS if p.access_level >= lv), "无")
+        )
+        counts[label] = counts.get(label, 0) + 1
+        if not p.can_push():
+            readonly.append(p.full_path)
+    summary = "，".join(f"{k} {v}" for k, v in counts.items())
+    if not readonly:
+        return CheckResult(name, Status.OK, f"都有推送权限（{summary}）")
+    status = Status.WARN if is_admin else Status.FAIL
+    return CheckResult(
+        name,
+        status,
+        f"{len(readonly)}/{len(projects)} 个工程没有推送权限（{summary}），"
+        f"这些工程只能导出、不能接收更新，例如 {readonly[0]}",
+    )
 
 
 def _check_git(

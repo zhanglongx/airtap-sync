@@ -319,3 +319,22 @@ def test_small_quota_spreads_several_projects_over_runs(
     assert held_back
     for name in names:
         assert sites["B"].heads(f"team/{name}")[H + "main"] == tips[name]
+
+
+def test_projects_without_push_rights_are_skipped_with_a_warning(
+    sites: Sites,
+) -> None:
+    seed(sites)
+    sites["B"].project("team/app")["permissions"] = {
+        "project_access": {"access_level": 20},
+        "group_access": None,
+    }
+    sites["B"].gitlab.is_admin = False
+    sites["A"].remote("team/app").commit("f", "2")
+    sites.run("A")
+    before = sites["B"].heads("team/app")
+    report = sites.run("B")
+    assert sites["B"].heads("team/app") == before
+    assert any("无推送权限" in w and "team/app" in w for w in report.warnings)
+    assert any("不是管理员" in w for w in report.warnings)
+    assert not report.needs_attention  # a known limitation, not an incident

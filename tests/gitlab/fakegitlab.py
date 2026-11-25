@@ -169,6 +169,8 @@ class FakeGitLab:
             path = urlparse(self.path).path
             fake.bodies.append((path, body))
             if path == "/api/v4/groups":
+                if not fake.is_admin and not body.get("parent_id"):
+                    return self._send(403, {"message": "403 Forbidden"})
                 parent = next(
                     (
                         g
@@ -212,6 +214,8 @@ class FakeGitLab:
                         {"message": {"visibility_level": ["public is not allowed"]}},
                     )
             else:
+                if not fake.is_admin:
+                    return self._send(403, {"message": "403 Forbidden"})
                 user_id = int(path.rsplit("/", 1)[-1])
                 names = [n for n, i in fake.users.items() if i == user_id]
                 if not names:

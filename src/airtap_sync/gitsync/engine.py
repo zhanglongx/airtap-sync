@@ -25,7 +25,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from airtap_sync.config import Side, TransferConfig
-from airtap_sync.gitlab.projects import Project, is_excluded
+from airtap_sync.gitlab.client import GitLabError
+from airtap_sync.gitlab.projects import Project, current_user, is_excluded
 from airtap_sync.gitsync.bundle import MissingPrerequisites
 from airtap_sync.gitsync.cache import repo_key
 from airtap_sync.gitsync.context import GitContext
@@ -226,6 +227,7 @@ class _Run:
                 "本端 GitLab 没有返回任何工程，可能是地址、令牌或权限有误"
             )
         self.report.projects_total = len(projects)
+        self._warn_if_not_admin()
         done = 0
 
         def on_done(_r: object) -> None:
@@ -249,6 +251,18 @@ class _Run:
             )
             self.local_projects[project.key] = project
 
+    def _warn_if_not_admin(self) -> None:
+        try:
+            user = current_user(self.ctx.client)
+        except GitLabError:
+            return  # listing projects worked; do not fail the run over this
+        if not user.is_admin:
+            self.report.warnings.append(
+                f"当前账号 {user.username} 不是管理员：只能同步有权限看到、"
+                "且有推送权限的工程；无法在他人的个人命名空间下建工程，"
+                "通常也不能创建群组"
+            )
+
     def _check_vanished(self, gone: list[ProjectDecision]) -> None:
         limit = self.ctx.max_deletions
         if len(gone) > limit:
@@ -262,6 +276,7 @@ class _Run:
     def _import(self, decisions: list[ProjectDecision], peer: ProjectsManifest) -> None:
         state = self.ctx.state
         work: list[ProjectDecision] = []
+        readonly: list[str] = []
         creations = []
         for d in decisions:
             self.report.projects_checked += 1
@@ -275,6 +290,8 @@ class _Run:
                         self.report.notes.append(
                             f"{d.path}：本端工程已归档，无法接收更新"
                         )
+                    elif not self.local_projects[d.key].can_push():
+                        readonly.append(d.path)
                     else:
                         work.append(d)
                 else:
@@ -282,6 +299,11 @@ class _Run:
             elif d.action is ProjectAction.CREATE_LOCAL:
                 creations.append(d)
 
+        if readonly:
+            shown = "、".join(readonly[:5]) + ("…" if len(readonly) > 5 else "")
+            self.report.warnings.append(
+                f"{len(readonly)} 个工程本端无推送权限，未接收对方的更新：{shown}"
+            )
         if len(creations) > self.max_new_projects and not self.options.confirm:
             self.report.pending_creates += [d.path for d in creations]
             creations = []

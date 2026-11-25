@@ -8,7 +8,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from airtap_sync.gitlab.client import GitLabClient, GitLabError, GitLabNotFound
+from airtap_sync.gitlab.client import (
+    GitLabAuthError,
+    GitLabClient,
+    GitLabError,
+    GitLabNotFound,
+)
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,13 @@ class Project:
     repository_size: int
     last_activity_at: str | None
     lfs_objects_size: int = 0
+    # The token user's best role in the project (10 Guest … 40 Maintainer,
+    # 50 Owner); ``None`` when GitLab does not say (e.g. an admin who is no member).
+    access_level: int | None = None
+
+    def can_push(self) -> bool:
+        """Whether the token may push; unknown access is given the benefit of doubt."""
+        return self.access_level is None or self.access_level >= DEVELOPER
 
     @property
     def key(self) -> str:
@@ -56,7 +68,27 @@ def parse_project(raw: dict[str, Any]) -> Project:
         repository_size=int(stats.get("repository_size") or 0),
         last_activity_at=raw.get("last_activity_at"),
         lfs_objects_size=int(stats.get("lfs_objects_size") or 0),
+        access_level=_access_level(raw.get("permissions")),
     )
+
+
+DEVELOPER = 30
+MAINTAINER = 40
+
+
+def _access_level(permissions: Any) -> int | None:
+    """Highest of the project and group access levels in ``permissions``."""
+    if not isinstance(permissions, dict):
+        return None
+    levels = [
+        int(entry["access_level"])
+        for entry in (
+            permissions.get("project_access"),
+            permissions.get("group_access"),
+        )
+        if isinstance(entry, dict) and entry.get("access_level") is not None
+    ]
+    return max(levels) if levels else None
 
 
 def list_projects(client: GitLabClient) -> list[Project]:
@@ -132,7 +164,14 @@ def ensure_group(
             }
             if parent_id is not None:
                 body["parent_id"] = parent_id
-            group = client.post("/groups", body)
+            try:
+                group = client.post("/groups", body)
+            except GitLabError as e:
+                raise GitLabError(
+                    f"无法创建群组 {current}：{e}。没有管理员权限时通常不能创建群组，"
+                    "请先让管理员在本端建好",
+                    e.status,
+                ) from None
         parent_id = int(group["id"])
     assert parent_id is not None
     return parent_id
@@ -169,7 +208,13 @@ def create_project(
     }
     if namespace_kind == "user":
         user_id = find_user_id(client, namespace_path)
-        raw = client.post(f"/projects/user/{user_id}", body)
+        try:
+            raw = client.post(f"/projects/user/{user_id}", body)
+        except GitLabAuthError:
+            raise GitLabAuthError(
+                f"无法在用户 {namespace_path} 的个人命名空间下建工程：需要管理员权限",
+                403,
+            ) from None
     else:
         body["namespace_id"] = ensure_group(
             client, namespace_path, visibility=visibility

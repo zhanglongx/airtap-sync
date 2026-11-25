@@ -71,7 +71,7 @@ def test_non_admin_and_other_version_are_flagged(
     fake_gitlab.is_admin = False
     fake_gitlab.version = "15.0.0"
     results = checks(fake_gitlab, populated)
-    assert results["管理员权限"].status is Status.FAIL
+    assert results["管理员权限"].status is Status.WARN
     assert results["GitLab 版本"].status is Status.WARN
 
 
@@ -137,5 +137,29 @@ def test_cli_check(
     assert "[通过] 访问令牌" in out and "[失败]" not in out
 
     fake_gitlab.is_admin = False
+    assert main(["--config", str(config), "gitlab", "check"]) == EXIT_OK
+    assert "[警告] 管理员权限" in capsys.readouterr().out
+
+    fake_gitlab.projects[0]["permissions"] = {
+        "project_access": {"access_level": 20},
+        "group_access": None,
+    }
     assert main(["--config", str(config), "gitlab", "check"]) == EXIT_ERROR
-    assert "[失败] 管理员权限" in capsys.readouterr().out
+    assert "[失败] 项目权限" in capsys.readouterr().out
+
+
+def test_access_levels_are_summarised(
+    fake_gitlab: FakeGitLab, populated: dict[str, Remote]
+) -> None:
+    perms = lambda level: {  # noqa: E731
+        "project_access": None,
+        "group_access": {"access_level": level},
+    }
+    fake_gitlab.projects[0]["permissions"] = perms(40)
+    fake_gitlab.projects[1]["permissions"] = perms(20)
+    fake_gitlab.is_admin = True
+    result = checks(fake_gitlab, populated)["项目权限"]
+    assert result.status is Status.WARN  # an admin can still push
+    assert "1/2" in result.detail and "Reporter 1" in result.detail
+    fake_gitlab.is_admin = False
+    assert checks(fake_gitlab, populated)["项目权限"].status is Status.FAIL
