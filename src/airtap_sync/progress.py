@@ -17,6 +17,7 @@ class Stage(StrEnum):
     """Coarse phases of one sync run, in execution order."""
 
     SCAN = "scan"
+    WARM = "warm"
     IMPORT = "import"
     MERGE = "merge"
     PUSH = "push"
@@ -30,6 +31,7 @@ class Stage(StrEnum):
 
 _STAGE_LABELS: dict[Stage, str] = {
     Stage.SCAN: "扫描",
+    Stage.WARM: "预热",
     Stage.IMPORT: "导入",
     Stage.MERGE: "合并",
     Stage.PUSH: "推送",

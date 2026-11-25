@@ -25,7 +25,6 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
         ["relay"],
         ["git", "snapshot"],
         ["git", "baseline", "base.json"],
-        ["git", "warm", "--days", "30"],
         ["git", "reset"],
         ["agent"],
         ["autostart", "enable"],

@@ -18,9 +18,13 @@ from airtap_sync import __version__, paths
 from airtap_sync.config import Config, ConfigError, load_config
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
 from airtap_sync.gitlab.credentials import default_token_store
-from airtap_sync.gitlab.projects import current_user
+from airtap_sync.gitlab.projects import current_user, filter_projects, list_projects
+from airtap_sync.gitsync.context import open_context
+from airtap_sync.gitsync.gitcmd import GitError
+from airtap_sync.gitsync.warm import warm_cache
 from airtap_sync.logs import setup_logging
 from airtap_sync.medium.volume import VolumeError, init_volume
+from airtap_sync.progress import ConsoleProgress, ProgressEvent, Stage
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -93,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", type=Path, help="snapshot 生成的基准文件")
     p = add("warm", "预先克隆最近活跃的工程到缓存", "M2", parent=git_sub)
     p.add_argument("--days", type=int, default=90, help="最近多少天内有活动（默认 90）")
+    p.set_defaults(handler=_git_warm)
     add("reset", "清空本地 Git 状态和缓存，以便重新初始化", "M2", parent=git_sub)
 
     add("agent", "启动后台常驻程序（托盘图标）", "M5")
@@ -136,6 +141,40 @@ def _gitlab_login(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     return EXIT_OK
+
+
+def _git_warm(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    ctx = open_context(config)
+    try:
+        projects = filter_projects(
+            list_projects(ctx.client), ctx.config.exclude_projects
+        )
+        progress = ConsoleProgress()
+
+        def on_progress(done: int, total: int, path: str) -> None:
+            progress(ProgressEvent(Stage.WARM, path, done, total))
+
+        result = warm_cache(
+            ctx.cache,
+            projects,
+            ctx.clone_url,
+            days=args.days,
+            on_progress=on_progress,
+        )
+    except (GitError, GitLabError) as e:
+        print(f"预热失败：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        ctx.cache.close()
+    print(
+        f"预热完成：新克隆 {len(result.cloned)} 个，"
+        f"已在缓存 {result.already_cached} 个，"
+        f"空间不足跳过 {len(result.no_room)} 个，失败 {len(result.failed)} 个"
+    )
+    for path, reason in result.failed.items():
+        print(f"  失败：{path}：{reason}", file=sys.stderr)
+    return EXIT_ERROR if result.failed else EXIT_OK
 
 
 def _not_implemented(command: str, milestone: str) -> Handler:
