@@ -13,9 +13,15 @@ dependencies = [
     "keyring>=25.0",
     "pathspec>=0.12",
     "platformdirs>=4.0",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
+# Tray icon and notifications for the background agent (tkinter ships with Python).
+tray = [
+    "pystray>=0.19",
+    "Pillow>=10.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
@@ -23,6 +29,9 @@ dev = [
 
 [project.scripts]
 airtap-sync = "airtap_sync.cli:main"
+
+[project.gui-scripts]
+airtap-sync-agent = "airtap_sync.agent.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

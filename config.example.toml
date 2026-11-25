@@ -15,6 +15,10 @@ max_bytes = "28GiB"               # 单次最多写入 U 盘的数据量
 reserve_free = "1GiB"             # U 盘上保留的空闲空间
 part_size = "512MiB"              # 大文件切片大小
 
+[agent]                           # 后台常驻程序（airtap-sync agent）
+auto_sync = true                  # 检测到配对的 U 盘后自动开始同步；false 则先询问
+poll_seconds = 3                  # 检测 U 盘的间隔
+
 [gitlab]
 url = "http://gitlab-a.example.com"   # 本网络 GitLab 的地址，不要带结尾的 /
 # include_projects = ["zh/*"]         # 只同步这些工程（按完整路径的通配符）；留空表示全部

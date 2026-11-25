@@ -28,16 +28,16 @@ from airtap_sync.gitsync.baseline import (
     adopt_baseline,
     take_snapshot,
 )
-from airtap_sync.gitsync.context import GitContext, open_context
+from airtap_sync.gitsync.context import open_context
 from airtap_sync.gitsync.engine import GitSyncAborted
 from airtap_sync.gitsync.gitcmd import GitError
 from airtap_sync.gitsync.scan import RemoteRefs
 from airtap_sync.gitsync.warm import warm_cache
 from airtap_sync.logs import setup_logging
 from airtap_sync.medium.outbox import FormatVersionError
-from airtap_sync.medium.volume import Volume, VolumeError, init_volume, open_volume
+from airtap_sync.medium.volume import VolumeError, init_volume
 from airtap_sync.progress import ConsoleProgress, ProgressEvent, Stage
-from airtap_sync.sync import SyncOptions, SyncResult, run_sync, write_sync_report
+from airtap_sync.sync import SyncResult, SyncSetupError, execute_sync
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -132,10 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="不再询问，直接清空")
     p.set_defaults(handler=_git_reset)
 
-    add("agent", "启动后台常驻程序（托盘图标）", "M5")
+    p = add("agent", "启动后台常驻程序（托盘图标）", "M5")
+    p.add_argument("--no-gui", action="store_true", help="不使用托盘界面，文本模式运行")
+    p.set_defaults(handler=_agent)
 
     p = add("autostart", "管理开机自启", "M5")
-    p.add_argument("action", choices=["enable", "disable"])
+    p.add_argument("action", choices=["enable", "disable", "status"])
+    p.set_defaults(handler=_autostart)
     return parser
 
 
@@ -180,74 +183,30 @@ def _sync(args: argparse.Namespace) -> int:
     if args.usb is None:
         print("请用 --usb 指定 U 盘根目录", file=sys.stderr)
         return EXIT_ERROR
-    want_git = args.only in (None, "git")
-    want_files = args.only in (None, "files")
-    if want_git and config.gitlab is None:
-        if args.only == "git":
-            print("配置中没有 [gitlab]，无法同步 Git", file=sys.stderr)
-            return EXIT_ERROR
-        want_git = False
-    if want_files and not config.folders:
-        if args.only == "files":
-            print("配置中没有 [folders.*]，没有要同步的目录", file=sys.stderr)
-            return EXIT_ERROR
-        want_files = False
-    if not (want_git or want_files):
-        print(
-            "配置中既没有 [gitlab] 也没有 [folders.*]，没有可同步的内容",
-            file=sys.stderr,
-        )
-        return EXIT_ERROR
-    ctx = open_context(config) if want_git else None
     try:
-        volume = open_volume(args.usb, config.pair_id)
-        result = _run_with_confirmation(
-            args, config, volume, ctx, SyncOptions(git=want_git, files=want_files)
+        outcome = execute_sync(
+            config,
+            args.usb,
+            only=args.only,
+            confirm=args.confirm_deletes,
+            dry_run=args.dry_run,
+            progress=ConsoleProgress(),
+            ask_confirmation=_ask_confirmation,
         )
+    except SyncSetupError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_ERROR
     except (VolumeError, FormatVersionError, GitSyncAborted) as e:
         print(f"同步中止：{e}", file=sys.stderr)
         return EXIT_ERROR
     except (GitError, GitLabError) as e:
         print(f"同步失败：{e}", file=sys.stderr)
         return EXIT_ERROR
-    finally:
-        if ctx is not None:
-            ctx.close()
-    reports = write_sync_report(
-        result, [volume.reports_dir, paths.log_dir() / "reports"]
-    )
-    for line in result.summaries():
+    for line in outcome.result.summaries():
         print(line)
-    if reports:
-        print(f"报告：{reports[-1]}")
-    return EXIT_ATTENTION if result.needs_attention else EXIT_OK
-
-
-def _run_with_confirmation(
-    args: argparse.Namespace,
-    config: Config,
-    volume: Volume,
-    ctx: GitContext | None,
-    options: SyncOptions,
-) -> SyncResult:
-    """Run the sync; if deletions/creations were held back, offer to apply them."""
-    options.confirm = args.confirm_deletes
-    options.dry_run = args.dry_run
-    while True:
-        result = run_sync(
-            config,
-            volume,
-            paths.staging_dir(),
-            paths.state_dir(),
-            options,
-            ctx,
-            ConsoleProgress(),
-        )
-        if options.confirm or args.dry_run or not result.has_pending_confirmation:
-            return result
-        options.confirm = _ask_confirmation(result)
-        if not options.confirm:
-            return result
+    if outcome.report_file:
+        print(f"报告：{outcome.report_file}")
+    return EXIT_ATTENTION if outcome.result.needs_attention else EXIT_OK
 
 
 def _ask_confirmation(result: SyncResult) -> bool:
@@ -413,6 +372,27 @@ def _gitlab_check(args: argparse.Namespace) -> int:
     for r in results:
         print(f"[{marks[r.status]}] {r.name}：{r.detail}")
     return EXIT_ERROR if any(r.status is Status.FAIL for r in results) else EXIT_OK
+
+
+def _agent(args: argparse.Namespace) -> int:
+    from airtap_sync.agent.app import run_agent
+
+    return run_agent(args.config or paths.default_config_file(), gui=not args.no_gui)
+
+
+def _autostart(args: argparse.Namespace) -> int:
+    from airtap_sync.agent import autostart
+
+    if args.action == "enable":
+        print(f"已启用开机自启：{autostart.enable()}")
+    elif args.action == "disable":
+        if autostart.disable():
+            print("已关闭开机自启")
+        else:
+            print("开机自启本来就没有启用")
+    else:
+        print("已启用" if autostart.is_enabled() else "未启用")
+    return EXIT_OK
 
 
 def _not_implemented(command: str, milestone: str) -> Handler:

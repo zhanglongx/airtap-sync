@@ -22,8 +22,6 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     [
         ["status"],
         ["relay"],
-        ["agent"],
-        ["autostart", "enable"],
     ],
 )
 def test_commands_registered_but_not_implemented(

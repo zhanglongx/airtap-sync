@@ -76,6 +76,7 @@ class TransferConfig:
 @dataclass(frozen=True)
 class AgentConfig:
     auto_sync: bool = True
+    poll_seconds: int = 3
 
 
 @dataclass(frozen=True)
@@ -225,7 +226,10 @@ def _parse_transfer(table: dict[str, Any]) -> TransferConfig:
 
 
 def _parse_agent(table: dict[str, Any]) -> AgentConfig:
-    result = AgentConfig(auto_sync=_pop_bool(table, "auto_sync", True, "agent"))
+    result = AgentConfig(
+        auto_sync=_pop_bool(table, "auto_sync", True, "agent"),
+        poll_seconds=_pop_int(table, "poll_seconds", 3, "agent", minimum=1),
+    )
     _reject_unknown(table, "agent")
     return result
 

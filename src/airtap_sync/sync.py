@@ -7,23 +7,26 @@ share the transfer quota (Git first, directories with what is left).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from airtap_sync import paths
-from airtap_sync.config import Config
+from airtap_sync.config import Config, ConfigError
 from airtap_sync.filesync.engine import FilesOptions, FilesSync
 from airtap_sync.filesync.report import FilesReport
 from airtap_sync.filesync.report import render_markdown as render_files
-from airtap_sync.gitsync.context import GitContext
-from airtap_sync.gitsync.engine import GitSync, GitSyncOptions
+from airtap_sync.gitlab.client import GitLabError
+from airtap_sync.gitsync.context import GitContext, open_context
+from airtap_sync.gitsync.engine import GitSync, GitSyncAborted, GitSyncOptions
+from airtap_sync.gitsync.gitcmd import GitError
 from airtap_sync.gitsync.report import GitSyncReport, body_lines
 from airtap_sync.medium.blobs import drop_unwanted_blobs
 from airtap_sync.medium.feedback import RECEIVED, Received, load_feedback
-from airtap_sync.medium.outbox import OutboxWriter, read_outbox
+from airtap_sync.medium.outbox import FormatVersionError, OutboxWriter, read_outbox
 from airtap_sync.medium.quota import usb_budget
-from airtap_sync.medium.volume import Volume
+from airtap_sync.medium.volume import Volume, VolumeError, open_volume
 from airtap_sync.progress import ProgressCallback, null_progress
 
 
@@ -190,3 +193,90 @@ def write_sync_report(
 
 def default_state_root() -> Path:
     return paths.state_dir()
+
+
+class SyncSetupError(Exception):
+    """The configuration leaves nothing to synchronise (message is user-facing)."""
+
+
+# Everything a run can fail with for a reason the user can act on.
+SYNC_ERRORS = (
+    SyncSetupError,
+    ConfigError,
+    VolumeError,
+    FormatVersionError,
+    GitSyncAborted,
+    GitError,
+    GitLabError,
+)
+
+
+@dataclass
+class SyncOutcome:
+    result: SyncResult
+    report_files: list[Path]
+
+    @property
+    def report_file(self) -> Path | None:
+        return self.report_files[-1] if self.report_files else None
+
+
+def choose_parts(config: Config, only: str | None) -> tuple[bool, bool]:
+    """Which of Git and directories to run; raises when nothing is left."""
+    want_git = only in (None, "git")
+    want_files = only in (None, "files")
+    if want_git and config.gitlab is None:
+        if only == "git":
+            raise SyncSetupError("配置中没有 [gitlab]，无法同步 Git")
+        want_git = False
+    if want_files and not config.folders:
+        if only == "files":
+            raise SyncSetupError("配置中没有 [folders.*]，没有要同步的目录")
+        want_files = False
+    if not (want_git or want_files):
+        raise SyncSetupError("配置中没有 [gitlab] 或 [folders.*]，没有可同步的内容")
+    return want_git, want_files
+
+
+def execute_sync(
+    config: Config,
+    usb: Path,
+    *,
+    only: str | None = None,
+    confirm: bool = False,
+    dry_run: bool = False,
+    progress: ProgressCallback = null_progress,
+    ask_confirmation: Callable[[SyncResult], bool] | None = None,
+) -> SyncOutcome:
+    """Open everything, sync, and write the report (what the CLI and the agent run).
+
+    If deletions or creations were held back by the safety thresholds,
+    ``ask_confirmation`` decides whether to run again with them allowed.
+    """
+    want_git, want_files = choose_parts(config, only)
+    ctx = open_context(config) if want_git else None
+    try:
+        volume = open_volume(usb, config.pair_id)
+        options = SyncOptions(
+            git=want_git, files=want_files, confirm=confirm, dry_run=dry_run
+        )
+        while True:
+            result = run_sync(
+                config,
+                volume,
+                paths.staging_dir(),
+                paths.state_dir(),
+                options,
+                ctx,
+                progress,
+            )
+            if options.confirm or dry_run or not result.has_pending_confirmation:
+                break
+            if ask_confirmation is None or not ask_confirmation(result):
+                break
+            options.confirm = True
+    finally:
+        if ctx is not None:
+            ctx.close()
+    directories = [volume.reports_dir, paths.log_dir() / "reports"]
+    return SyncOutcome(result, write_sync_report(result, directories))
