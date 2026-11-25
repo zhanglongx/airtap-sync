@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import fnmatch
+import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from airtap_sync.gitlab.client import GitLabClient
+from airtap_sync.gitlab.client import GitLabClient, GitLabError, GitLabNotFound
 
 
 @dataclass(frozen=True)
@@ -91,3 +92,100 @@ def current_user(client: GitLabClient) -> CurrentUser:
     """The user the token belongs to (also verifies the token works)."""
     raw = client.get("/user")
     return CurrentUser(str(raw["username"]), bool(raw.get("is_admin", False)))
+
+
+# ----- creating what the peer has --------------------------------------------
+
+
+class UserNotFound(GitLabError):
+    """A personal-namespace project needs a user the local GitLab lacks."""
+
+
+def _quote(path: str) -> str:
+    return urllib.parse.quote(path, safe="")
+
+
+def find_group(client: GitLabClient, full_path: str) -> dict[str, Any] | None:
+    try:
+        return client.get(f"/groups/{_quote(full_path)}")
+    except GitLabNotFound:
+        return None
+
+
+def ensure_group(
+    client: GitLabClient, full_path: str, *, visibility: str = "private"
+) -> int:
+    """Return the id of the group at ``full_path``, creating missing levels."""
+    parent_id: int | None = None
+    walked: list[str] = []
+    for segment in full_path.split("/"):
+        walked.append(segment)
+        current = "/".join(walked)
+        group = find_group(client, current)
+        if group is None:
+            body: dict[str, Any] = {
+                "name": segment,
+                "path": segment,
+                "visibility": visibility,
+            }
+            if parent_id is not None:
+                body["parent_id"] = parent_id
+            group = client.post("/groups", body)
+        parent_id = int(group["id"])
+    assert parent_id is not None
+    return parent_id
+
+
+def find_user_id(client: GitLabClient, username: str) -> int:
+    users = client.get("/users", {"username": username}) or []
+    for user in users:
+        if str(user.get("username", "")).lower() == username.lower():
+            return int(user["id"])
+    raise UserNotFound(f"本端 GitLab 上没有用户 {username}，请先创建该用户")
+
+
+def create_project(
+    client: GitLabClient,
+    *,
+    full_path: str,
+    name: str,
+    description: str,
+    visibility: str,
+    namespace_kind: str,
+    namespace_path: str,
+    lfs_enabled: bool,
+) -> Project:
+    """Create an empty project at ``full_path`` (groups are created as needed)."""
+    path = full_path.rsplit("/", 1)[-1]
+    body: dict[str, Any] = {
+        "name": name,
+        "path": path,
+        "description": description,
+        "visibility": visibility,
+        "lfs_enabled": lfs_enabled,
+        "initialize_with_readme": False,
+    }
+    if namespace_kind == "user":
+        user_id = find_user_id(client, namespace_path)
+        raw = client.post(f"/projects/user/{user_id}", body)
+    else:
+        body["namespace_id"] = ensure_group(
+            client, namespace_path, visibility=visibility
+        )
+        try:
+            raw = client.post("/projects", body)
+        except GitLabError as e:
+            # A project may not be more visible than its group; fall back.
+            if "visibility" not in str(e).lower() or visibility == "private":
+                raise
+            body["visibility"] = "private"
+            raw = client.post("/projects", body)
+    return parse_project(raw)
+
+
+def set_default_branch(client: GitLabClient, project_id: int, branch: str) -> None:
+    client.put(f"/projects/{project_id}", {"default_branch": branch})
+
+
+def archive_project(client: GitLabClient, project_id: int) -> None:
+    client.post(f"/projects/{project_id}/archive")

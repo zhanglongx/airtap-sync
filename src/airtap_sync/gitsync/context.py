@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from airtap_sync import paths
 from airtap_sync.config import Config, ConfigError, GitLabConfig
 from airtap_sync.gitlab.client import GitLabClient
 from airtap_sync.gitlab.credentials import TokenStore, load_token
+from airtap_sync.gitlab.projects import Project, filter_projects, list_projects
 from airtap_sync.gitsync.cache import RepoCache
 from airtap_sync.gitsync.gitcmd import GitAuth, GitRunner
+from airtap_sync.gitsync.refs import RefFilter
+from airtap_sync.gitsync.scan import RemoteRefs, ls_remote_all
+from airtap_sync.gitsync.state import GitState
 
 
 @dataclass
@@ -17,6 +23,30 @@ class GitContext:
     client: GitLabClient
     runner: GitRunner
     cache: RepoCache
+    state: GitState
+
+    def close(self) -> None:
+        self.cache.close()
+        self.state.close()
+
+    @property
+    def ref_filter(self) -> RefFilter:
+        return RefFilter(self.config.include_branches, self.config.exclude_branches)
+
+    def discover(self) -> list[Project]:
+        """Every project on the local GitLab that is not excluded by config."""
+        return filter_projects(list_projects(self.client), self.config.exclude_projects)
+
+    def scan(
+        self,
+        projects: Iterable[Project],
+        on_done: Callable[[RemoteRefs], None] | None = None,
+    ) -> dict[str, RemoteRefs]:
+        """``git ls-remote`` for all projects, keyed by lowercased path."""
+        targets = [(p.key, self.clone_url(p.full_path)) for p in projects]
+        return ls_remote_all(
+            self.runner, targets, concurrency=self.config.concurrency, on_done=on_done
+        )
 
     def clone_url(self, full_path: str) -> str:
         """URL of a project on the local GitLab, built from the configured base.
@@ -42,4 +72,5 @@ def open_context(config: Config, store: TokenStore | None = None) -> GitContext:
         client=GitLabClient(gitlab.url, token),
         runner=runner,
         cache=RepoCache(gitlab.cache.dir, gitlab.cache.max_size, runner),
+        state=GitState(paths.state_dir() / "git" / "state.sqlite"),
     )

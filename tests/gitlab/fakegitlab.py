@@ -6,7 +6,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 class FakeGitLab:
@@ -15,12 +15,19 @@ class FakeGitLab:
     def __init__(self, token: str = "secret") -> None:
         self.token = token
         self.projects: list[dict[str, Any]] = []
+        self.private_groups = False  # reject public projects in groups
         self.username = "syncbot"
         self.is_admin = True
         self.requests: list[tuple[str, str]] = []
+        self.groups: dict[str, dict[str, Any]] = {}  # by full_path
+        self.users: dict[str, int] = {}  # username -> id
+        self.bodies: list[tuple[str, dict[str, Any]]] = []  # (path, JSON body)
+        self._next_id = 1000
         # HTTP statuses to answer with before behaving normally.
         self.fail_with: list[int] = []
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        handler = self._handler()
+        self._write_methods(handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             kwargs={"poll_interval": 0.01},
@@ -66,6 +73,22 @@ class FakeGitLab:
         self.projects.append(raw)
         return raw
 
+    def new_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    def add_group(self, full_path: str) -> dict[str, Any]:
+        parent, _, path = full_path.rpartition("/")
+        group = {
+            "id": self.new_id(),
+            "name": path,
+            "path": path,
+            "full_path": full_path,
+            "parent_id": self.groups[parent]["id"] if parent else None,
+        }
+        self.groups[full_path] = group
+        return group
+
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         fake = self
 
@@ -92,6 +115,19 @@ class FakeGitLab:
                     return self._send(status, {"message": f"injected {status}"})
                 if self.headers.get("PRIVATE-TOKEN") != fake.token:
                     return self._send(401, {"message": "401 Unauthorized"})
+                if parsed.path.startswith("/api/v4/groups/"):
+                    path = unquote(parsed.path.removeprefix("/api/v4/groups/"))
+                    if path in fake.groups:
+                        return self._send(200, fake.groups[path])
+                    return self._send(404, {"message": "404 Group Not Found"})
+                if parsed.path == "/api/v4/users":
+                    name = query.get("username", "")
+                    found = (
+                        [{"id": fake.users[name], "username": name}]
+                        if name in fake.users
+                        else []
+                    )
+                    return self._send(200, found)
                 if parsed.path == "/api/v4/user":
                     return self._send(
                         200, {"username": fake.username, "is_admin": fake.is_admin}
@@ -112,3 +148,99 @@ class FakeGitLab:
                 return self._send(404, {"message": "404 Not Found"})
 
         return Handler
+
+    def _write_methods(self, handler: type[BaseHTTPRequestHandler]) -> None:
+        fake = self
+
+        def body_of(self: BaseHTTPRequestHandler) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length") or 0)
+            return json.loads(self.rfile.read(length) or b"{}")
+
+        def do_POST(self: Any) -> None:
+            fake.requests.append(("POST", self.path))
+            if self.headers.get("PRIVATE-TOKEN") != fake.token:
+                return self._send(401, {"message": "401 Unauthorized"})
+            body = body_of(self)
+            path = urlparse(self.path).path
+            fake.bodies.append((path, body))
+            if path == "/api/v4/groups":
+                parent = next(
+                    (
+                        g
+                        for g in fake.groups.values()
+                        if g["id"] == body.get("parent_id")
+                    ),
+                    None,
+                )
+                full = (
+                    f"{parent['full_path']}/{body['path']}" if parent else body["path"]
+                )
+                if full in fake.groups:
+                    return self._send(400, {"message": "Path has already been taken"})
+                return self._send(201, fake.add_group(full))
+            if path == "/api/v4/projects" or path.startswith("/api/v4/projects/user/"):
+                return self._create_project(path, body)
+            if path.endswith("/archive"):
+                pid = int(path.split("/")[-2])
+                for p in fake.projects:
+                    if p["id"] == pid:
+                        p["archived"] = True
+                        return self._send(201, p)
+            return self._send(404, {"message": "404 Not Found"})
+
+        def _create_project(self: Any, path: str, body: dict[str, Any]) -> None:
+            if path.endswith("/projects"):
+                ns = next(
+                    (
+                        g
+                        for g in fake.groups.values()
+                        if g["id"] == body.get("namespace_id")
+                    ),
+                    None,
+                )
+                if ns is None:
+                    return self._send(400, {"message": "namespace is invalid"})
+                kind, ns_path = "group", ns["full_path"]
+                if fake.private_groups and body.get("visibility") == "public":
+                    return self._send(
+                        400,
+                        {"message": {"visibility_level": ["public is not allowed"]}},
+                    )
+            else:
+                user_id = int(path.rsplit("/", 1)[-1])
+                names = [n for n, i in fake.users.items() if i == user_id]
+                if not names:
+                    return self._send(404, {"message": "404 User Not Found"})
+                kind, ns_path = "user", names[0]
+            full = f"{ns_path}/{body['path']}"
+            if any(p["path_with_namespace"] == full for p in fake.projects):
+                return self._send(400, {"message": "has already been taken"})
+            raw = fake.add_project(
+                fake.new_id(),
+                full,
+                name=body.get("name", body["path"]),
+                description=body.get("description", ""),
+                visibility=body.get("visibility", "private"),
+                lfs_enabled=body.get("lfs_enabled", False),
+                default_branch=None,
+                namespace={"id": 1, "kind": kind, "full_path": ns_path},
+            )
+            return self._send(201, raw)
+
+        def do_PUT(self: Any) -> None:
+            fake.requests.append(("PUT", self.path))
+            if self.headers.get("PRIVATE-TOKEN") != fake.token:
+                return self._send(401, {"message": "401 Unauthorized"})
+            body = body_of(self)
+            path = urlparse(self.path).path
+            fake.bodies.append((path, body))
+            pid = int(path.rsplit("/", 1)[-1])
+            for p in fake.projects:
+                if p["id"] == pid:
+                    p.update(body)
+                    return self._send(200, p)
+            return self._send(404, {"message": "404 Not Found"})
+
+        handler.do_POST = do_POST  # type: ignore[attr-defined]
+        handler.do_PUT = do_PUT  # type: ignore[attr-defined]
+        handler._create_project = _create_project  # type: ignore[attr-defined]

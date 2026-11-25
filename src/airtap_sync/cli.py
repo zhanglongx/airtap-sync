@@ -11,6 +11,7 @@ import argparse
 import getpass
 import logging
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -19,8 +20,15 @@ from airtap_sync.config import Config, ConfigError, load_config
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
 from airtap_sync.gitlab.credentials import default_token_store
 from airtap_sync.gitlab.projects import current_user, filter_projects, list_projects
+from airtap_sync.gitsync.baseline import (
+    Baseline,
+    BaselineError,
+    adopt_baseline,
+    take_snapshot,
+)
 from airtap_sync.gitsync.context import open_context
 from airtap_sync.gitsync.gitcmd import GitError
+from airtap_sync.gitsync.scan import RemoteRefs
 from airtap_sync.gitsync.warm import warm_cache
 from airtap_sync.logs import setup_logging
 from airtap_sync.medium.volume import VolumeError, init_volume
@@ -92,13 +100,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     git = sub.add_parser("git", help="Git 同步的辅助命令")
     git_sub = git.add_subparsers(dest="git_command", metavar="<子命令>", required=True)
-    add("snapshot", "GitLab 备份前记录基准快照（A 端）", "M2", parent=git_sub)
+    p = add("snapshot", "GitLab 备份前记录基准快照（A 端）", "M2", parent=git_sub)
+    p.add_argument(
+        "--output", type=Path, required=True, metavar="FILE", help="基准文件的保存位置"
+    )
+    p.set_defaults(handler=_git_snapshot)
     p = add("baseline", "GitLab 恢复后采用基准快照（B 端）", "M2", parent=git_sub)
     p.add_argument("file", type=Path, help="snapshot 生成的基准文件")
+    p.set_defaults(handler=_git_baseline)
     p = add("warm", "预先克隆最近活跃的工程到缓存", "M2", parent=git_sub)
     p.add_argument("--days", type=int, default=90, help="最近多少天内有活动（默认 90）")
     p.set_defaults(handler=_git_warm)
-    add("reset", "清空本地 Git 状态和缓存，以便重新初始化", "M2", parent=git_sub)
+    p = add("reset", "清空本地 Git 状态和缓存，以便重新初始化", "M2", parent=git_sub)
+    p.add_argument("--yes", action="store_true", help="不再询问，直接清空")
+    p.set_defaults(handler=_git_reset)
 
     add("agent", "启动后台常驻程序（托盘图标）", "M5")
 
@@ -143,6 +158,86 @@ def _gitlab_login(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _scan_progress(label: str) -> Callable[[RemoteRefs], None]:
+    """Count finished ls-remote calls and print every 50th."""
+    done = 0
+    lock = threading.Lock()
+
+    def on_done(_result: RemoteRefs) -> None:
+        nonlocal done
+        with lock:
+            done += 1
+            if done % 50 == 0:
+                print(f"{label}：已检查 {done} 个工程", file=sys.stderr)
+
+    return on_done
+
+
+def _git_snapshot(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    ctx = open_context(config)
+    try:
+        projects = ctx.discover()
+        print(f"共 {len(projects)} 个工程，正在读取分支和 tag……", file=sys.stderr)
+        refs = ctx.scan(projects, _scan_progress("快照"))
+        baseline = take_snapshot(config.side, projects, refs, ctx.ref_filter, ctx.state)
+        baseline.save(args.output)
+    except (BaselineError, GitError, GitLabError) as e:
+        print(f"快照失败：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        ctx.close()
+    print(f"已记录 {len(baseline.projects)} 个工程，基准文件：{args.output}")
+    print("请把该文件复制到 U 盘；GitLab 备份完成后，在对端运行 git baseline。")
+    return EXIT_OK
+
+
+def _git_baseline(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    ctx = open_context(config)
+    try:
+        baseline = Baseline.load(args.file)
+        if baseline.side == config.side:
+            print(f"基准文件来自本端（{config.side}），应在对端采用它", file=sys.stderr)
+            return EXIT_ERROR
+        projects = ctx.discover()
+        print(f"共 {len(projects)} 个工程，正在核对……", file=sys.stderr)
+        refs = ctx.scan(projects, _scan_progress("核对"))
+        report = adopt_baseline(baseline, projects, refs, ctx.ref_filter, ctx.state)
+    except (BaselineError, GitError, GitLabError) as e:
+        print(f"采用基准失败：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        ctx.close()
+    print(f"已采用基准：{report.adopted} 个工程")
+    for title, items in (
+        ("本端缺少（恢复可能不完整）", report.missing_locally),
+        ("分支或 tag 与基准不一致", report.refs_differ),
+    ):
+        if items:
+            print(f"警告：{title}，共 {len(items)} 个：", file=sys.stderr)
+            for path in items[:20]:
+                print(f"  {path}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _git_reset(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    if not args.yes:
+        answer = input("这会清空本地 Git 同步状态和缓存，确认？输入 yes 继续：")
+        if answer.strip().lower() != "yes":
+            print("已取消", file=sys.stderr)
+            return EXIT_ERROR
+    ctx = open_context(config)
+    try:
+        ctx.state.clear()
+        ctx.cache.clear()
+    finally:
+        ctx.close()
+    print("已清空本地 Git 同步状态和缓存")
+    return EXIT_OK
+
+
 def _git_warm(args: argparse.Namespace) -> int:
     config = load_effective_config(args.config)
     ctx = open_context(config)
@@ -166,7 +261,7 @@ def _git_warm(args: argparse.Namespace) -> int:
         print(f"预热失败：{e}", file=sys.stderr)
         return EXIT_ERROR
     finally:
-        ctx.cache.close()
+        ctx.close()
     print(
         f"预热完成：新克隆 {len(result.cloned)} 个，"
         f"已在缓存 {result.already_cached} 个，"
