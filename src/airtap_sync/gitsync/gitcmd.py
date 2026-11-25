@@ -108,6 +108,25 @@ class GitRunner:
             )
         return proc
 
+    def run_binary(
+        self, args: Sequence[str], *, cwd: Path | None = None, input_bytes: bytes = b""
+    ) -> bytes:
+        """Run git and return raw stdout (for commands that stream object content)."""
+        try:
+            proc = subprocess.run(
+                [self.git, *args],
+                cwd=cwd,
+                env=self._env(None),
+                input=input_bytes,
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            raise GitError("找不到 git，请先安装 Git 并加入 PATH") from None
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip()
+            raise GitError(f"git {args[0]} 失败（退出码 {proc.returncode}）：{detail}")
+        return proc.stdout
+
     def version(self) -> tuple[int, ...]:
         out = self.run(["--version"]).stdout
         match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", out)

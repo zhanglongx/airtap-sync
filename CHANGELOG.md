@@ -18,3 +18,4 @@
 - 新增 `include_projects`（只同步指定命名空间下的工程，`exclude_projects` 优先）；非管理员可在自己的个人命名空间下建工程；`gitlab check` 按同步范围统计权限
 - `gitlab check --namespaces`：按命名空间列出可写/总数（混合命名空间再展开一级），便于选择 `include_projects`
 - 修复：推送权限改由服务端判断（`min_access_level`），正确识别从上级群组继承的角色；此前项目列表里的 `permissions` 只反映工程所在群组本身的成员关系，导致继承权限的工程被误判为只读
+- M2e LFS 同步：扫描新提交里的 LFS 指针，从本端 GitLab 下载对象，随 bundle 经 U 盘（内容寻址、分片、分批）传递；对端推送前先通过 Batch 接口上传服务器还缺的对象；服务端报告的主机名被替换为配置的地址；对象读不到时在发送端报告

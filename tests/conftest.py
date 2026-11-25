@@ -7,6 +7,7 @@ import pytest
 
 from airtap_sync import paths
 from tests.gitlab.fakegitlab import FakeGitLab
+from tests.gitsync.sites import Sites
 
 
 @pytest.fixture(autouse=True)
@@ -25,3 +26,18 @@ def fake_gitlab() -> Iterator[FakeGitLab]:
         yield server
     finally:
         server.stop()
+
+
+@pytest.fixture
+def gitlab_b() -> Iterator[FakeGitLab]:
+    """The second network's GitLab (``fake_gitlab`` is the first)."""
+    server = FakeGitLab().start()
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+@pytest.fixture
+def sites(tmp_path: Path, fake_gitlab: FakeGitLab, gitlab_b: FakeGitLab) -> Sites:
+    return Sites(tmp_path, fake_gitlab, gitlab_b)

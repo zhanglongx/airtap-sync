@@ -9,6 +9,7 @@ from airtap_sync import paths
 from airtap_sync.config import Config, ConfigError, GitLabConfig, SafetyConfig
 from airtap_sync.gitlab.client import GitLabClient
 from airtap_sync.gitlab.credentials import TokenStore, load_token
+from airtap_sync.gitlab.lfs import LfsClient
 from airtap_sync.gitlab.projects import (
     Project,
     filter_projects,
@@ -31,6 +32,7 @@ class GitContext:
     state: GitState
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     username: str | None = None  # the token's user, once known
+    lfs: LfsClient | None = None  # ``None`` disables LFS synchronisation
 
     @property
     def max_deletions(self) -> int:
@@ -94,4 +96,5 @@ def open_context(config: Config, store: TokenStore | None = None) -> GitContext:
         cache=RepoCache(gitlab.cache.dir, gitlab.cache.max_size, runner),
         state=GitState(paths.state_dir() / "git" / "state.sqlite"),
         safety=config.safety,
+        lfs=LfsClient(gitlab.url, token),
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,6 +49,7 @@ def sync_project(
     create: bool,
     trash_stamp: str,
     confirmed: bool = False,
+    before_push: Callable[[str], None] | None = None,
 ) -> ProjectSyncResult:
     """Bring one project in line with the peer's record.
 
@@ -84,6 +86,8 @@ def sync_project(
         with ctx.cache.open(local_path, url) as repo:
             if bundle is not None:
                 import_bundle(ctx.runner, repo, bundle)
+            if before_push is not None:
+                before_push(local_path)  # e.g. upload LFS objects the refs need
             result.refs = sync_refs(
                 ctx.runner,
                 repo,

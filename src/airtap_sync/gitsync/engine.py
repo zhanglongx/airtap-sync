@@ -15,22 +15,25 @@ the next run.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import shutil
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from airtap_sync.config import Side, TransferConfig
 from airtap_sync.gitlab.client import GitLabError
+from airtap_sync.gitlab.lfs import LfsObject
 from airtap_sync.gitlab.projects import Project, current_user
 from airtap_sync.gitsync.bundle import MissingPrerequisites
 from airtap_sync.gitsync.cache import repo_key
 from airtap_sync.gitsync.context import GitContext
 from airtap_sync.gitsync.gitcmd import GitError, RefMap
+from airtap_sync.gitsync.lfsscan import find_lfs_objects
 from airtap_sync.gitsync.manifest import (
     BundleInfo,
     ProjectRecord,
@@ -51,6 +54,7 @@ from airtap_sync.gitsync.transport import (
     GIT_MANIFEST,
     RECEIVED,
     Received,
+    blob_base,
     bundle_base,
 )
 from airtap_sync.medium.atomicio import sha256_file
@@ -115,6 +119,7 @@ class _Run:
         self.transfer = transfer
         self.staging = staging / "git"
         self.outgoing = staging / "git-outgoing"
+        self.outgoing_lfs = staging / "git-outgoing-lfs"
         self.options = options
         self.progress = progress
         self.max_new_projects = ctx.safety.max_new_projects
@@ -331,6 +336,20 @@ class _Run:
             return
 
         local_path = d.local.path if d.local else d.path
+        uploads: list[tuple[LfsObject, Path]] = []
+        if info is not None and info.lfs and self.ctx.lfs is not None:
+            prepared = self._prepare_lfs(d, info, local_path, create)
+            if prepared is None:
+                if bundle is not None:
+                    bundle.unlink(missing_ok=True)
+                return  # waiting for LFS data, or the server was unreachable
+            uploads = prepared
+
+        def upload_lfs(project_path: str) -> None:
+            assert self.ctx.lfs is not None
+            for obj, path in uploads:
+                self.ctx.lfs.upload(project_path, obj, path)
+
         try:
             result = sync_project(
                 self.ctx,
@@ -341,6 +360,7 @@ class _Run:
                 create=create,
                 trash_stamp=self.stamp,
                 confirmed=self.options.confirm,
+                before_push=upload_lfs if uploads else None,
             )
         except MissingPrerequisites as e:
             self.feedback_out.needs_full.append(d.key)
@@ -349,6 +369,8 @@ class _Run:
         finally:
             if bundle is not None:
                 bundle.unlink(missing_ok=True)
+            for _obj, path in uploads:
+                path.unlink(missing_ok=True)
 
         if result.error:
             self.report.failures.append(f"{result.path}：{result.error}")
@@ -400,21 +422,62 @@ class _Run:
     def _fetch_bundle(self, d: ProjectDecision, info: BundleInfo) -> Path | None:
         """Bring the peer's bundle for ``d`` to a local file, or ``None``."""
         src = bundle_base(self.peer_dir, d.peer.path if d.peer else d.path, info.sha256)
-        stage_base = self.staging / f"{info.sha256}.stage"
-        dest = self.staging / f"{info.sha256}.bundle"
+        return self._fetch_file(
+            d.path, src, info.sha256, info.size, f"{info.sha256}.bundle", "bundle"
+        )
+
+    def _fetch_file(
+        self, path: str, src: Path, sha256: str, size: int, name: str, what: str
+    ) -> Path | None:
+        """Pull a file (or its parts) from the peer's outbox into staging."""
+        stage_base = self.staging / f"{sha256}.stage"
+        dest = self.staging / name
         self.staging.mkdir(parents=True, exist_ok=True)
         try:
-            result = fetch(src, stage_base, dest, sha256=info.sha256, size=info.size)
+            result = fetch(src, stage_base, dest, sha256=sha256, size=size)
         except PartsError as e:
-            self.report.failures.append(f"{d.path}：bundle 校验失败：{e}")
+            self.report.failures.append(f"{path}：{what} 校验失败：{e}")
             return None
         if result.staged:
-            self.feedback_out.staged[info.sha256] = sorted(result.staged)
+            self.feedback_out.staged[sha256] = sorted(result.staged)
         if not result.complete:
-            self.report.deferred.append(f"{d.path}：数据尚未传完")
+            self.report.deferred.append(f"{path}：{what} 数据尚未传完")
             return None
-        self.feedback_out.staged.pop(info.sha256, None)
+        self.feedback_out.staged.pop(sha256, None)
         return dest
+
+    def _prepare_lfs(
+        self, d: ProjectDecision, info: BundleInfo, local_path: str, create: bool
+    ) -> list[tuple[LfsObject, Path]] | None:
+        """Fetch the LFS objects the local GitLab still needs for this project.
+
+        ``None`` means the project must wait: some object has not arrived yet, or
+        the server could not be asked. A new project needs every object.
+        """
+        lfs = self.ctx.lfs
+        assert lfs is not None
+        objects = [LfsObject(oid, size) for oid, size in info.lfs]
+        try:
+            needed = objects if create else lfs.missing(local_path, objects)
+        except GitLabError as e:
+            self.report.failures.append(f"{d.path}：无法查询 LFS 状态：{e}")
+            return None
+        fetched: list[tuple[LfsObject, Path]] = []
+        for obj in needed:
+            path = self._fetch_file(
+                d.path,
+                blob_base(self.peer_dir, obj.oid),
+                obj.oid,
+                obj.size,
+                f"{obj.oid}.lfs",
+                f"LFS 对象 {obj.oid[:12]}",
+            )
+            if path is None:
+                for _o, p in fetched:
+                    p.unlink(missing_ok=True)
+                return None
+            fetched.append((obj, path))
+        return fetched
 
     # ----- export --------------------------------------------------------------
 
@@ -559,7 +622,47 @@ class _Run:
         self.report.exported.append(
             ExportedBundle(rec.path, info.size, result.complete, info.full)
         )
+        if info.lfs:
+            info = self._export_lfs(rec, info, feedback_in, budget)
         return info
+
+    def _export_lfs(
+        self,
+        rec: ProjectRecord,
+        info: BundleInfo,
+        feedback_in: Received,
+        budget: Budget,
+    ) -> BundleInfo:
+        """Place the bundle's LFS objects on the drive; drop any that cannot be read."""
+        lfs = self.ctx.lfs
+        if lfs is None:
+            return replace(info, lfs=())
+        self.outgoing_lfs.mkdir(parents=True, exist_ok=True)
+        usable = []
+        for oid, size in info.lfs:
+            local = self.outgoing_lfs / oid
+            if not local.is_file():
+                try:
+                    lfs.download(rec.path, LfsObject(oid, size), local)
+                except GitLabError as e:
+                    # Listing it would make the receiver wait for ever; the
+                    # receiver's push is then refused with a clear LFS message.
+                    self.report.failures.append(
+                        f"{rec.path}：LFS 对象 {oid[:12]} 无法读取：{e}"
+                    )
+                    continue
+            usable.append((oid, size))
+            try:
+                store(
+                    local,
+                    blob_base(self.my_dir, oid),
+                    part_size=self.transfer.part_size,
+                    budget=budget,
+                    skip=feedback_in.staged.get(oid, []),
+                )
+            except (PartsError, OSError) as e:
+                self.report.failures.append(f"{rec.path}：LFS 对象写入 U 盘失败：{e}")
+        return replace(info, lfs=tuple(usable))
 
     def _build_bundle(
         self,
@@ -586,6 +689,14 @@ class _Run:
                 base=state.base_refs(key),
                 full=full,
             )
+            lfs_objects: list[LfsObject] = []
+            if made and ctx.lfs is not None:
+                known = (
+                    []
+                    if full
+                    else [*peer_refs.values(), *state.base_refs(key).values()]
+                )
+                lfs_objects = find_lfs_objects(ctx.runner, repo, refs.values(), known)
         if not made:
             return None, None
         digest = sha256_file(tmp)
@@ -594,7 +705,14 @@ class _Run:
         # The signature describes the refs actually bundled.
         known = None if full else _known(peer_refs, state.base_refs(key))
         signature = _signature(refs, known)
-        return BundleInfo(digest, final.stat().st_size, full, signature), final
+        info = BundleInfo(
+            digest,
+            final.stat().st_size,
+            full,
+            signature,
+            lfs=tuple((o.oid, o.size) for o in lfs_objects),
+        )
+        return info, final
 
     def _drop_stale_bundles(self, current: Mapping[str, BundleInfo]) -> None:
         """Remove bundle files on the drive and locally that are no longer wanted."""
@@ -617,13 +735,34 @@ class _Run:
             for f in self.outgoing.iterdir():
                 if f.name not in keep:
                     f.unlink(missing_ok=True)
+        wanted_oids = {oid for info in current.values() for oid, _ in info.lfs}
+        self._drop_stale_blobs(wanted_oids)
+
+    def _drop_stale_blobs(self, wanted: set[str]) -> None:
+        """Remove LFS objects (on the drive and local copies) nobody needs now."""
+        root = self.my_dir / "blobs"
+        if root.is_dir():
+            for shard in root.iterdir():
+                for f in shard.iterdir():
+                    if f.name.split(".", 1)[0] not in wanted:
+                        f.unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    shard.rmdir()
+        if self.outgoing_lfs.is_dir():
+            for f in self.outgoing_lfs.iterdir():
+                if f.name not in wanted:
+                    f.unlink(missing_ok=True)
 
     # ----- housekeeping -------------------------------------------------------------
 
     def _cleanup_staging(self, peer: ProjectsManifest | None) -> None:
         if not self.staging.is_dir():
             return
-        wanted = {b.sha256 for b in peer.bundles.values()} if peer else set()
+        wanted: set[str] = set()
+        if peer:
+            for b in peer.bundles.values():
+                wanted.add(b.sha256)
+                wanted.update(oid for oid, _ in b.lfs)
         for f in self.staging.iterdir():
             sha = f.name.split(".", 1)[0]
             if sha not in wanted:

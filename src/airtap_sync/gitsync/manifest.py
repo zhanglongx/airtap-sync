@@ -87,6 +87,9 @@ class BundleInfo:
     # Hash of the inputs it was built from; an unchanged signature means the
     # existing bundle (and any parts already delivered) can be reused as is.
     signature: str
+    # LFS objects ``(oid, size)`` referenced by the commits this bundle adds;
+    # the receiver must upload them to its GitLab before pushing the refs.
+    lfs: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass
@@ -121,5 +124,6 @@ class ProjectsManifest:
                 size=int(b["size"]),
                 full=bool(b["full"]),
                 signature=str(b["signature"]),
+                lfs=tuple((str(o), int(s)) for o, s in b.get("lfs", [])),
             )
         return manifest

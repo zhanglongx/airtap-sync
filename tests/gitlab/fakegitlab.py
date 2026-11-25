@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +21,10 @@ class FakeGitLab:
         self.username = "syncbot"
         self.is_admin = True
         self.requests: list[tuple[str, str]] = []
+        self.lfs: dict[str, dict[str, bytes]] = {}  # project -> oid -> content
+        # Hrefs in LFS answers use this host, like a GitLab whose external_url
+        # differs from the address clients use.
+        self.lfs_external = "http://external.invalid"
         self.groups: dict[str, dict[str, Any]] = {}  # by full_path
         self.users: dict[str, int] = {}  # username -> id
         self.bodies: list[tuple[str, dict[str, Any]]] = []  # (path, JSON body)
@@ -88,6 +93,12 @@ class FakeGitLab:
         ]
         return max([*levels, project.get("inherited_level", 0)])
 
+    def lfs_put(self, project: str, content: bytes) -> tuple[str, int]:
+        """Store an LFS object in a project; return ``(oid, size)``."""
+        oid = hashlib.sha256(content).hexdigest()
+        self.lfs.setdefault(project, {})[oid] = content
+        return oid, len(content)
+
     def new_id(self) -> int:
         self._next_id += 1
         return self._next_id
@@ -122,6 +133,17 @@ class FakeGitLab:
                 self.wfile.write(raw)
 
             def do_GET(self) -> None:
+                if "/gitlab-lfs/objects/" in self.path:
+                    project, _, oid = self.path.partition(".git/gitlab-lfs/objects/")
+                    content = fake.lfs.get(project.strip("/"), {}).get(oid)
+                    fake.requests.append(("LFS-GET", self.path))
+                    if content is None:
+                        return self._send(404, {"message": "not found"})
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
                 parsed = urlparse(self.path)
                 query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
                 fake.requests.append(("GET", self.path))
@@ -183,6 +205,10 @@ class FakeGitLab:
             fake.requests.append(("POST", self.path))
             if self.path.endswith("/info/lfs/objects/batch"):
                 return self._lfs_batch()
+            if self.path.endswith("/gitlab-lfs/objects/verify"):
+                fake.requests.append(("LFS-VERIFY", self.path))
+                body_of(self)
+                return self._send(200, {})
             if self.headers.get("PRIVATE-TOKEN") != fake.token:
                 return self._send(401, {"message": "401 Unauthorized"})
             body = body_of(self)
@@ -271,9 +297,48 @@ class FakeGitLab:
                 for p in fake.projects
             ):
                 return self._send(404, {"message": "LFS not enabled"})
-            return self._send(200, {"transfer": "basic", "objects": body["objects"]})
+            store = fake.lfs.get(project, {})
+            base = f"{fake.lfs_external}/{project}.git/gitlab-lfs/objects"
+            answers = []
+            for obj in body["objects"]:
+                entry = {"oid": obj["oid"], "size": obj["size"], "authenticated": True}
+                have = obj["oid"] in store
+                if body["operation"] == "download":
+                    if have:
+                        entry["actions"] = {
+                            "download": {"href": f"{base}/{obj['oid']}"}
+                        }
+                    else:
+                        entry["error"] = {
+                            "code": 404,
+                            "message": "Object does not exist",
+                        }
+                elif not have:
+                    entry["actions"] = {
+                        "upload": {
+                            "href": f"{base}/{obj['oid']}/{obj['size']}",
+                            "header": {"X-Test": "1"},
+                        },
+                        "verify": {"href": f"{base}/verify"},
+                    }
+                answers.append(entry)
+            return self._send(200, {"transfer": "basic", "objects": answers})
+
+        def _lfs_put(self: Any) -> None:
+            fake.requests.append(("LFS-PUT", self.path))
+            if not self.headers.get("Authorization", "").startswith("Basic "):
+                return self._send(401, {"message": "no auth"})
+            project, _, rest = self.path.partition(".git/gitlab-lfs/objects/")
+            oid, _, size = rest.partition("/")
+            data = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if hashlib.sha256(data).hexdigest() != oid or len(data) != int(size):
+                return self._send(422, {"message": "wrong content"})
+            fake.lfs.setdefault(project.strip("/"), {})[oid] = data
+            return self._send(200, {})
 
         def do_PUT(self: Any) -> None:
+            if "/gitlab-lfs/objects/" in self.path:
+                return self._lfs_put()
             fake.requests.append(("PUT", self.path))
             if self.headers.get("PRIVATE-TOKEN") != fake.token:
                 return self._send(401, {"message": "401 Unauthorized"})
@@ -291,3 +356,4 @@ class FakeGitLab:
         handler.do_PUT = do_PUT  # type: ignore[attr-defined]
         handler._create_project = _create_project  # type: ignore[attr-defined]
         handler._lfs_batch = _lfs_batch  # type: ignore[attr-defined]
+        handler._lfs_put = _lfs_put  # type: ignore[attr-defined]

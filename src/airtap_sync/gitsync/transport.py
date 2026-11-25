@@ -17,6 +17,11 @@ def bundle_base(outbox_dir: Path, project_path: str, sha256: str) -> Path:
     return outbox_dir / "git" / "bundles" / repo_key(project_path) / f"{sha256}.bundle"
 
 
+def blob_base(outbox_dir: Path, oid: str) -> Path:
+    """Base path of an LFS object (content-addressed; parts append ``.partNNNN``)."""
+    return outbox_dir / "blobs" / oid[:2] / oid
+
+
 def bundle_dir(outbox_dir: Path, project_path: str) -> Path:
     return outbox_dir / "git" / "bundles" / repo_key(project_path)
 

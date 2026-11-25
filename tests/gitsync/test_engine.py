@@ -10,38 +10,10 @@ from airtap_sync.gitsync.engine import GitSyncAborted
 from airtap_sync.gitsync.report import render_markdown
 from airtap_sync.medium.outbox import FORMAT_VERSION
 from tests.gitlab.fakegitlab import FakeGitLab
-from tests.gitsync.gitrepo import git
-from tests.gitsync.sites import Sites
+from tests.gitsync.sites import Sites, seed
 
 H = "refs/heads/"
 T = "refs/tags/"
-
-
-@pytest.fixture
-def gitlab_b() -> FakeGitLab:
-    server = FakeGitLab().start()
-    yield server
-    server.stop()
-
-
-@pytest.fixture
-def sites(tmp_path: Path, fake_gitlab: FakeGitLab, gitlab_b: FakeGitLab) -> Sites:
-    return Sites(tmp_path, fake_gitlab, gitlab_b)
-
-
-def seed(sites: Sites, path: str = "team/app") -> None:
-    """A project that exists on both sides, already in sync (as after a restore)."""
-    for side in "AB":
-        sites[side].add_project(path)
-    a = sites["A"].remote(path)
-    a.commit("f", "1")
-    git("push", "-q", sites["B"].remote(path).url, "main", cwd=a.work)
-    # Both sides adopt the same baseline, as `git snapshot` / `git baseline` would.
-    refs = sites["A"].heads(path)
-    for side in "AB":
-        state = sites[side].ctx.state
-        state.add_base_project(path.lower(), path)
-        state.set_base_refs(path.lower(), refs)
 
 
 def test_new_project_is_created_on_the_other_side(sites: Sites) -> None:

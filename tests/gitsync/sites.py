@@ -13,6 +13,7 @@ from airtap_sync.config import (
     TransferConfig,
 )
 from airtap_sync.gitlab.client import GitLabClient
+from airtap_sync.gitlab.lfs import LfsClient
 from airtap_sync.gitsync.cache import RepoCache
 from airtap_sync.gitsync.context import GitContext
 from airtap_sync.gitsync.engine import GitSyncOptions, run_git_sync
@@ -46,6 +47,7 @@ class Site:
             cache=RepoCache(self.root / "cache", 10**9, runner),
             state=GitState(self.root / "state.sqlite"),
             safety=self.safety,
+            lfs=LfsClient(self.gitlab.url, "secret"),
         )
         self.ctx.clone_url = lambda path: self.remote(path).url  # type: ignore
         self.next_id = 1
@@ -123,3 +125,18 @@ class Sites:
         """A, B, A, B: enough for a change on either side to reach the other."""
         for side in "ABAB":
             self.run(side)
+
+
+def seed(sites: Sites, path: str = "team/app") -> None:
+    """A project that exists on both sides, already in sync (as after a restore)."""
+    for side in "AB":
+        sites[side].add_project(path)
+    a = sites["A"].remote(path)
+    a.commit("f", "1")
+    git("push", "-q", sites["B"].remote(path).url, "main", cwd=a.work)
+    # Both sides adopt the same baseline, as `git snapshot` / `git baseline` would.
+    refs = sites["A"].heads(path)
+    for side in "AB":
+        state = sites[side].ctx.state
+        state.add_base_project(path.lower(), path)
+        state.set_base_refs(path.lower(), refs)

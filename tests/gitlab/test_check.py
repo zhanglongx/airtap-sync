@@ -113,11 +113,12 @@ def test_lfs_batch_roundtrip_and_errors(fake_gitlab: FakeGitLab) -> None:
     fake_gitlab.add_project(1, "team/a")
     lfs = LfsClient(fake_gitlab.url, "secret")
     answer = lfs.batch("team/a", "download", [LfsObject("ab" * 32, 5)])
-    assert answer == [{"oid": "ab" * 32, "size": 5}]
+    assert answer[0]["oid"] == "ab" * 32
+    assert answer[0]["error"]["code"] == 404  # unknown object, but the call works
     from airtap_sync.gitlab.client import GitLabNotFound
 
     with pytest.raises(GitLabNotFound):
-        lfs.batch("team/unknown", "download", [])
+        lfs.batch("team/unknown", "download", [LfsObject("ab" * 32, 5)])
 
 
 def test_cli_check(
