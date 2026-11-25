@@ -21,3 +21,16 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest
+
+  package:
+    # Make sure the executables still build; the artifact is only for inspection.
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[tray,build]"
+      - run: python scripts/build_exe.py
+      - run: dist\airtap-sync\airtap-sync.exe --version

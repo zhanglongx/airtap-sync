@@ -22,10 +22,16 @@ tray = [
     "pystray>=0.19",
     "Pillow>=10.0",
 ]
+build = [
+    "pyinstaller>=6.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zhanglongx/airtap-sync"
 
 [project.scripts]
 airtap-sync = "airtap_sync.cli:main"

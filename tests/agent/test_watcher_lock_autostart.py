@@ -126,3 +126,16 @@ def test_autostart_windows_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     assert autostart.is_enabled()
     assert autostart.disable()
     assert not autostart.is_enabled()
+
+
+def test_frozen_build_prefers_the_windowless_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = tmp_path / "airtap-sync.exe"
+    cli.write_bytes(b"")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(cli))
+    assert autostart.agent_command() == [str(cli), "agent"]  # no agent next to it
+    agent = tmp_path / "airtap-sync-agent.exe"
+    agent.write_bytes(b"")
+    assert autostart.agent_command() == [str(agent)]

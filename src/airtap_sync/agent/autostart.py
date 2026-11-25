@@ -18,7 +18,12 @@ def _windows() -> bool:
 def agent_command() -> list[str]:
     """The command line that starts the agent from this installation."""
     if getattr(sys, "frozen", False):  # a PyInstaller build
-        return [sys.executable, "agent"]
+        exe = Path(sys.executable)
+        for sibling in ("airtap-sync-agent.exe", "airtap-sync-agent"):
+            agent = exe.with_name(sibling)  # the windowless build, if shipped
+            if agent.exists():
+                return [str(agent)]
+        return [str(exe), "agent"]
     exe = Path(sys.executable)
     if _windows():  # no console window
         windowless = exe.with_name("pythonw.exe")

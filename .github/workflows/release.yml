@@ -1,0 +1,27 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[tray,build]"
+      - run: python scripts/build_exe.py
+      - run: dist\airtap-sync\airtap-sync.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airtap-sync-windows
+          path: dist/*.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
