@@ -23,7 +23,6 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
         ["sync", "--dry-run", "--only", "git"],
         ["status"],
         ["relay"],
-        ["gitlab", "login"],
         ["git", "snapshot"],
         ["git", "baseline", "base.json"],
         ["git", "warm", "--days", "30"],

@@ -8,6 +8,7 @@ which milestone will implement them.
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 import sys
 from collections.abc import Callable, Sequence
@@ -15,6 +16,9 @@ from pathlib import Path
 
 from airtap_sync import __version__, paths
 from airtap_sync.config import Config, ConfigError, load_config
+from airtap_sync.gitlab.client import GitLabClient, GitLabError
+from airtap_sync.gitlab.credentials import default_token_store
+from airtap_sync.gitlab.projects import current_user
 from airtap_sync.logs import setup_logging
 from airtap_sync.medium.volume import VolumeError, init_volume
 
@@ -79,7 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     gitlab_sub = gitlab.add_subparsers(
         dest="gitlab_command", metavar="<子命令>", required=True
     )
-    add("login", "把访问令牌保存到系统凭据库", "M2", parent=gitlab_sub)
+    p = add("login", "把访问令牌保存到系统凭据库", "M2", parent=gitlab_sub)
+    p.set_defaults(handler=_gitlab_login)
 
     git = sub.add_parser("git", help="Git 同步的辅助命令")
     git_sub = git.add_subparsers(dest="git_command", metavar="<子命令>", required=True)
@@ -106,6 +111,30 @@ def _init_usb(args: argparse.Namespace) -> int:
     print(f"U 盘已初始化：{volume.dir}")
     print(f'pair_id = "{volume.pair_id}"')
     print("请把这个 pair_id 写入 A、B 两台电脑的 config.toml。")
+    return EXIT_OK
+
+
+def _gitlab_login(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    if config.gitlab is None:
+        raise ConfigError("config.toml 中没有 [gitlab] 配置")
+    url = config.gitlab.url
+    token = getpass.getpass(f"请输入 {url} 的访问令牌（需要 api 权限）：").strip()
+    if not token:
+        print("未输入令牌", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        user = current_user(GitLabClient(url, token))
+    except GitLabError as e:
+        print(f"令牌验证失败：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    default_token_store().set(url, token)
+    print(f"已保存令牌：用户 {user.username}")
+    if not user.is_admin:
+        print(
+            "警告：该用户不是管理员，无法列出全部工程，也无法在个人命名空间下建工程",
+            file=sys.stderr,
+        )
     return EXIT_OK
 
 
