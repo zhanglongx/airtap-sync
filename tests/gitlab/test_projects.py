@@ -134,3 +134,22 @@ def test_access_level_is_the_best_of_project_and_group_roles() -> None:
     assert not project(None).can_push()
     assert project(None).can_push(is_admin=True)
     assert not project({"project_access": {"access_level": 20}}).can_push()
+
+
+def test_writable_is_resolved_by_the_server_including_inherited_roles(
+    fake_gitlab: FakeGitLab,
+) -> None:
+    fake_gitlab.add_project(1, "ZH/tetris-web/app")
+    fake_gitlab.add_project(2, "ZH/other")
+    fake_gitlab.projects[0]["inherited_level"] = 50  # list shows permissions: null
+    projects = list_projects(GitLabClient(fake_gitlab.url, "secret"))
+    first, second = projects
+    assert first.access_level is None  # what the list itself says
+    assert first.writable is True  # what min_access_level says
+    assert first.can_push()
+    assert second.writable is False and not second.can_push()
+    assert second.can_push(is_admin=True)
+    unresolved = list_projects(
+        GitLabClient(fake_gitlab.url, "secret"), resolve_access=False
+    )
+    assert unresolved[0].writable is None

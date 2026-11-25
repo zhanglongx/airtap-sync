@@ -5,7 +5,7 @@ from __future__ import annotations
 import fnmatch
 import urllib.parse
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from airtap_sync.gitlab.client import (
@@ -39,11 +39,18 @@ class Project:
     # 50 Owner); ``None`` when the user is no member (the project is merely
     # visible, e.g. internal) or GitLab does not say.
     access_level: int | None = None
+    # Whether the token user has at least Developer rights, as answered by the
+    # server (``min_access_level``), which counts roles inherited from parent
+    # groups. ``access_level`` above does not: the project list only reports a
+    # membership of the project's own group. ``None`` = not asked.
+    writable: bool | None = None
 
     def can_push(self, is_admin: bool = False) -> bool:
         """Whether the token may push. Admins can everywhere; others need a role."""
         if is_admin:
             return True
+        if self.writable is not None:
+            return self.writable
         return self.access_level is not None and self.access_level >= DEVELOPER
 
     @property
@@ -77,6 +84,7 @@ def parse_project(raw: dict[str, Any]) -> Project:
 
 DEVELOPER = 30
 MAINTAINER = 40
+OWNER = 50
 
 
 def _access_level(permissions: Any) -> int | None:
@@ -94,13 +102,32 @@ def _access_level(permissions: Any) -> int | None:
     return max(levels) if levels else None
 
 
-def list_projects(client: GitLabClient) -> list[Project]:
+def list_projects(
+    client: GitLabClient, *, resolve_access: bool = True
+) -> list[Project]:
     """List every project visible to the token, with statistics.
 
-    With an admin token this is every project on the instance.
+    With an admin token this is every project on the instance. Unless disabled,
+    a second (light) listing asks the server which projects the token user can
+    push to, so that roles inherited from parent groups are honoured.
     """
     params = {"statistics": "true", "order_by": "id", "sort": "asc"}
-    return [parse_project(raw) for raw in client.paginate("/projects", params)]
+    projects = [parse_project(raw) for raw in client.paginate("/projects", params)]
+    if not resolve_access:
+        return projects
+    writable = project_ids_with_access(client, DEVELOPER)
+    return [replace(p, writable=p.id in writable) for p in projects]
+
+
+def project_ids_with_access(client: GitLabClient, min_level: int) -> set[int]:
+    """Ids of the projects where the token user has at least ``min_level``."""
+    params = {
+        "min_access_level": min_level,
+        "simple": "true",
+        "order_by": "id",
+        "sort": "asc",
+    }
+    return {int(raw["id"]) for raw in client.paginate("/projects", params)}
 
 
 def is_excluded(full_path: str, patterns: Iterable[str]) -> bool:

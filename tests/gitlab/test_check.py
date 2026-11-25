@@ -171,7 +171,7 @@ def test_access_levels_are_summarised(
     fake_gitlab.is_admin = False
     result = checks(fake_gitlab, populated)["项目权限"]
     assert result.status is Status.WARN
-    assert "1/2" in result.detail and "Reporter 1" in result.detail
+    assert "1/2" in result.detail and "Maintainer 1，只读 1" in result.detail
     assert "team（1）" in result.detail
 
 
@@ -181,7 +181,7 @@ def test_non_members_are_read_only_for_non_admins(
     fake_gitlab.is_admin = False  # permissions absent -> not a member
     result = checks(fake_gitlab, populated)["项目权限"]
     assert result.status is Status.WARN
-    assert "2/2" in result.detail and "非成员 2" in result.detail
+    assert "2/2" in result.detail and "只读 2" in result.detail
 
 
 def test_namespace_table_breaks_down_mixed_namespaces() -> None:
@@ -232,3 +232,19 @@ def test_cli_check_namespaces_flag(
     out = capsys.readouterr().out
     assert "各命名空间中本账号可推送的工程数" in out
     assert "team/*  可写 0 / 共 2" in out
+
+
+def test_roles_inherited_from_a_parent_group_count_as_writable(
+    fake_gitlab: FakeGitLab, populated: dict[str, Remote]
+) -> None:
+    """The project list shows no role for a project whose group inherits it
+    (``permissions`` is null), yet the user is Owner through the parent group."""
+    fake_gitlab.is_admin = False
+    fake_gitlab.projects[0]["permissions"] = {
+        "project_access": None,
+        "group_access": None,
+    }
+    fake_gitlab.projects[0]["inherited_level"] = 50
+    result = checks(fake_gitlab, populated)["项目权限"]
+    assert "Owner 1" in result.detail
+    assert "1/2" in result.detail  # only the other project is read-only

@@ -17,3 +17,4 @@
 - `gitlab check`/同步：非管理员对“只是可见、不是成员”的工程视为无推送权限；项目权限检查列出权限分布和集中的顶层命名空间；external_url 与配置地址解析到同一台机器时不再警告
 - 新增 `include_projects`（只同步指定命名空间下的工程，`exclude_projects` 优先）；非管理员可在自己的个人命名空间下建工程；`gitlab check` 按同步范围统计权限
 - `gitlab check --namespaces`：按命名空间列出可写/总数（混合命名空间再展开一级），便于选择 `include_projects`
+- 修复：推送权限改由服务端判断（`min_access_level`），正确识别从上级群组继承的角色；此前项目列表里的 `permissions` 只反映工程所在群组本身的成员关系，导致继承权限的工程被误判为只读

@@ -74,6 +74,20 @@ class FakeGitLab:
         self.projects.append(raw)
         return raw
 
+    @staticmethod
+    def effective_level(project: dict[str, Any]) -> int:
+        """The user's real role, as ``min_access_level`` sees it.
+
+        ``inherited_level`` models a role inherited from a parent group, which
+        the ``permissions`` field of the project list does not show.
+        """
+        perms = project.get("permissions") or {}
+        levels = [
+            (perms.get(k) or {}).get("access_level", 0)
+            for k in ("project_access", "group_access")
+        ]
+        return max([*levels, project.get("inherited_level", 0)])
+
     def new_id(self) -> int:
         self._next_id += 1
         return self._next_id
@@ -138,13 +152,19 @@ class FakeGitLab:
                 if parsed.path == "/api/v4/projects":
                     per_page = int(query.get("per_page", 20))
                     page = int(query.get("page", 1))
-                    chunk = fake.projects[(page - 1) * per_page : page * per_page]
-                    more = page * per_page < len(fake.projects)
+                    listing = fake.projects
+                    if "min_access_level" in query:
+                        wanted = int(query["min_access_level"])
+                        listing = [
+                            p for p in listing if fake.effective_level(p) >= wanted
+                        ]
+                    chunk = listing[(page - 1) * per_page : page * per_page]
+                    more = page * per_page < len(listing)
                     return self._send(
                         200,
                         chunk,
                         {
-                            "X-Total": str(len(fake.projects)),
+                            "X-Total": str(len(listing)),
                             "X-Next-Page": str(page + 1) if more else "",
                         },
                     )

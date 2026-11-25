@@ -11,7 +11,14 @@ from urllib.parse import urlparse
 
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
 from airtap_sync.gitlab.lfs import LfsClient, LfsObject
-from airtap_sync.gitlab.projects import Project, current_user, list_projects
+from airtap_sync.gitlab.projects import (
+    MAINTAINER,
+    OWNER,
+    Project,
+    current_user,
+    list_projects,
+    project_ids_with_access,
+)
 from airtap_sync.gitsync.gitcmd import GitError, GitRunner
 
 # Version this program was designed and tested against.
@@ -95,18 +102,16 @@ def run_checks(
     if not projects:
         return results
 
-    results.append(_check_access(projects, user.is_admin))
+    owners = maintainers = None
+    if not user.is_admin:
+        try:
+            owners = project_ids_with_access(client, OWNER)
+            maintainers = project_ids_with_access(client, MAINTAINER)
+        except GitLabError:
+            pass  # only the role breakdown is lost
+    results.append(_check_access(projects, user.is_admin, owners, maintainers))
     results += _check_git(projects, runner, clone_url, lfs, sample, base_url)
     return results
-
-
-_LEVELS = [
-    (50, "Owner"),
-    (40, "Maintainer"),
-    (30, "Developer"),
-    (20, "Reporter"),
-    (10, "Guest"),
-]
 
 
 def namespace_table(
@@ -143,18 +148,28 @@ def namespace_table(
     return lines
 
 
-def _check_access(projects: list[Project], is_admin: bool) -> CheckResult:
+def _check_access(
+    projects: list[Project],
+    is_admin: bool,
+    owners: set[int] | None = None,
+    maintainers: set[int] | None = None,
+) -> CheckResult:
     """How much the token's user may do in the listed projects."""
     name = "项目权限"
+    owners, maintainers = owners or set(), maintainers or set()
     counts: dict[str, int] = {}
     readonly: list[Project] = []
     for p in projects:
         if is_admin:
             label = "管理员"
-        elif p.access_level is None:
-            label = "非成员"
+        elif p.id in owners:
+            label = "Owner"
+        elif p.id in maintainers:
+            label = "Maintainer"
+        elif p.can_push(is_admin):
+            label = "Developer"
         else:
-            label = next((n for lv, n in _LEVELS if p.access_level >= lv), "无")
+            label = "只读"
         counts[label] = counts.get(label, 0) + 1
         if not p.can_push(is_admin):
             readonly.append(p)
@@ -172,8 +187,8 @@ def _check_access(projects: list[Project], is_admin: bool) -> CheckResult:
         name,
         Status.WARN,
         f"{len(readonly)}/{len(projects)} 个工程没有推送权限（{summary}）。"
-        "这些工程在本端只能导出、不能接收对方的更新；"
-        f"集中在这些顶层命名空间：{biggest}",
+        "这些工程在本端只能导出、不能接收对方的更新（只读 = 非成员，或角色低于 "
+        f"Developer）；集中在这些顶层命名空间：{biggest}",
     )
 
 
