@@ -198,6 +198,7 @@ B 上的改动要到第二天早上在 A 上插入 U 盘时才会到达 A，这�
 - **同步很久没动静**：大工程第一次被处理时需要完整克隆（最大的工程约 18 GiB）；之后只拉增量。
 - **U 盘空间不够**：超过配额的内容会分批，报告里会写“本轮未发送”，下一轮继续；可以调大 `[transfer] max_bytes` 或换更大的盘。
 - **杀毒软件拦截 exe**：把 `airtap-sync` 目录加入白名单；PyInstaller 打包的程序偶尔会被误报。
+- **打包时报 `Tk data/library directory ... could not be collected`**：多半是环境变量 `TCL_LIBRARY` 或 `TK_LIBRARY` 还指向一个已经卸载的 Python（路径里的版本和你正在用的不一致）。`scripts/build_exe.py` 现在会自动忽略它们；也可以在 PowerShell 里 `Remove-Item Env:TCL_LIBRARY, Env:TK_LIBRARY` 后再试。如果这个 Python 的 tkinter 本身不可用，打包会自动去掉它，后台程序就只能用文本模式。
 - **托盘图标不出现**：Windows 上确认安装了 `[tray]` 组件；Linux 的 GNOME 需要 AppIndicator 扩展。没有托盘时程序会自动改用文本模式，用 `--no-gui` 也可以强制文本模式。
 
 ## 开发

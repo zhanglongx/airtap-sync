@@ -22,3 +22,4 @@
 - M3 目录同步：忽略规则（gitignore 语法，两端取并集）、带哈希缓存的扫描、三方合并（内容决定是否变化；冲突时较新者为正式文件，另一份以确定性的名字保留在两端；删除与修改冲突时修改优先）、安全落盘（临时文件加替换、保留对端 mtime、同步中被改动则跳过、删除或覆盖前移入 30 天回收区）、防误删（目录不存在或被清空时中止、删除超阈值转确认）、内容去重（改名或对端已有相同内容时不传输）、分片分批传输；`sync` 现在一次同时处理 Git 和目录，共用一个 outbox 提交和传输配额，报告合并为一份
 - M5 后台常驻程序：`airtap-sync agent`（托盘图标 + 进度窗口，没有显示环境或缺少托盘组件时自动改为文本模式）、按 pair_id 检测配对 U 盘并自动同步（可配置为先询问）、暂停/立即同步/打开报告和日志目录、单实例锁、`autostart enable|disable|status`（Windows 注册表 Run 键 / Linux autostart）；同步入口抽成 `execute_sync` 供命令行和后台程序共用；托盘依赖放在可选项 `airtap-sync[tray]`
 - M6 打包与文档：PyInstaller 打包脚本（`scripts/build_exe.py`，一个目录里两个程序：命令行 `airtap-sync` 和无窗口的后台程序 `airtap-sync-agent`）、GitHub Actions 打包校验和发布流程（推送 `v*` 标签时在 Windows 上构建并上传压缩包）、frozen 环境下开机自启优先使用无窗口的程序；重写 README（原理、安装、配置、初始化流程、日常使用、冲突与恢复、常见问题）；已在 Linux 上构建并冒烟测试通过
+- 修复打包：忽略指向已卸载 Python 的 `TCL_LIBRARY`/`TK_LIBRARY`；tkinter 不可用时自动从打包中排除；Windows 专用的隐藏导入只在 Windows 上添加
