@@ -11,3 +11,4 @@
 - M2c 工程层：工程清单（manifest）、工程三方合并（对方新建则本端自动建群组和工程；删除、改名、转移只报告不处理）、改名识别、默认分支与归档状态复制、Git 同步状态库、`git snapshot` / `git baseline` / `git reset` 命令
 - M2d Git 完整同步流程：`sync` 命令（`--usb`、`--dry-run`、`--confirm-deletes`）串起读取对方数据、工程与分支合并、导入、导出 bundle（增量、全量回退、按配额分批、断点续传）、防误删阈值确认、同步报告（写入 U 盘和本地）
 - 新增 `gitlab check`：只读检查令牌、管理员权限、GitLab 版本、工程列表耗时、通过 HTTP 读取代码、LFS 接口、external_url；新增 LFS Batch 客户端雏形
+- 新增 `config.example.toml` 配置示例，并加测试保证示例始终可解析

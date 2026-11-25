@@ -1,0 +1,37 @@
+# airtap-sync 配置示例
+#
+# 默认位置：
+#   Windows  %APPDATA%\airtap-sync\config.toml
+#   Linux    ~/.config/airtap-sync/config.toml
+# 也可以用 --config 指定：airtap-sync --config my.toml gitlab check
+#
+# 路径含反斜杠时请用单引号：'D:\work\docs'
+
+side = "A"                        # 本机所在网络："A" 或 "B"
+pair_id = "请替换为 init-usb 打印出的 pair_id"  # 仅做 gitlab check 时随便填非空即可
+
+[transfer]                        # U 盘传输限额（都有默认值，可省略）
+max_bytes = "28GiB"               # 单次最多写入 U 盘的数据量
+reserve_free = "1GiB"             # U 盘上保留的空闲空间
+part_size = "512MiB"              # 大文件切片大小
+
+[gitlab]
+url = "http://gitlab-a.example.com"   # 本网络 GitLab 的地址，不要带结尾的 /
+# exclude_projects = ["sandbox/*"]    # 不同步的工程（按完整路径的通配符）
+# include_branches = []               # 只同步这些分支；留空表示全部
+# exclude_branches = ["wip/*"]        # 不同步的分支
+# ci_skip = true                      # 推送时附带 ci.skip，避免触发对方的 CI
+# concurrency = 8                     # 并发检查工程的数量
+
+[gitlab.cache]
+dir = 'D:\airtap-cache'           # 本地仓库缓存目录（必填）
+max_size = "100GiB"               # 缓存上限，超过后按最近最少使用淘汰
+
+[safety]
+max_deletions = 20                # 一次删除分支/tag 超过此数量时，转人工确认
+max_new_projects = 20             # 一次新建工程超过此数量时，转人工确认
+
+# 目录同步（尚未实现，先不用配置）
+# [folders.docs]
+# path = 'D:\work\docs'
+# ignore = ["build/", "*.log"]
