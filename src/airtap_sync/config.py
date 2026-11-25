@@ -6,6 +6,7 @@ silently ignored. Error messages are user-facing and therefore in Chinese.
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from collections.abc import Mapping
@@ -37,6 +38,11 @@ _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*$")
 _FOLDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 MAX_CONCURRENCY = 64
+
+
+def user_path(value: str) -> Path:
+    """A configured path with ``~`` and environment variables expanded."""
+    return Path(os.path.expandvars(value)).expanduser()
 
 
 class ConfigError(ValueError):
@@ -237,7 +243,7 @@ def _parse_folders(table: dict[str, Any]) -> dict[str, FolderConfig]:
             raise ConfigError(f"[{section}] path: 必须是非空字符串")
         folders[name] = FolderConfig(
             name=name,
-            path=Path(path),
+            path=user_path(path),
             ignore=_pop_str_list(entry, "ignore", section),
         )
         _reject_unknown(entry, section)
@@ -254,7 +260,7 @@ def _parse_gitlab(table: dict[str, Any]) -> GitLabConfig:
     if not isinstance(cache_dir, str) or not cache_dir.strip():
         raise ConfigError("[gitlab.cache] dir: 必须指定缓存目录")
     cache = GitLabCacheConfig(
-        dir=Path(cache_dir),
+        dir=user_path(cache_dir),
         max_size=_pop_size(
             cache_table,
             "max_size",

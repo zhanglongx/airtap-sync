@@ -29,6 +29,7 @@ class Project:
     http_url: str
     repository_size: int
     last_activity_at: str | None
+    lfs_objects_size: int = 0
 
     @property
     def key(self) -> str:
@@ -54,6 +55,7 @@ def parse_project(raw: dict[str, Any]) -> Project:
         http_url=str(raw.get("http_url_to_repo", "")),
         repository_size=int(stats.get("repository_size") or 0),
         last_activity_at=raw.get("last_activity_at"),
+        lfs_objects_size=int(stats.get("lfs_objects_size") or 0),
     )
 
 

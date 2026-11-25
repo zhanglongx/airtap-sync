@@ -12,3 +12,4 @@
 - M2d Git 完整同步流程：`sync` 命令（`--usb`、`--dry-run`、`--confirm-deletes`）串起读取对方数据、工程与分支合并、导入、导出 bundle（增量、全量回退、按配额分批、断点续传）、防误删阈值确认、同步报告（写入 U 盘和本地）
 - 新增 `gitlab check`：只读检查令牌、管理员权限、GitLab 版本、工程列表耗时、通过 HTTP 读取代码、LFS 接口、external_url；新增 LFS Batch 客户端雏形
 - 新增 `config.example.toml` 配置示例，并加测试保证示例始终可解析
+- 修复：配置中的 `~` 和环境变量现在会展开（此前会在当前目录建出名为 `~` 的目录）；`gitlab check` 的 LFS 探测改为请求一个虚构对象（GitLab 对空请求返回 404）并优先选用有 LFS 数据的工程，external_url 警告会写出服务端报告的地址

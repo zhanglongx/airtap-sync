@@ -72,11 +72,16 @@ class LfsClient:
                 raise GitLabAuthError(
                     f"LFS 拒绝访问（HTTP {e.code}）：令牌或权限不足", e.code
                 ) from None
+            detail = e.read().decode("utf-8", "replace").strip()[:200]
             if e.code == 404:
                 raise GitLabNotFound(
-                    "该工程没有启用 LFS，或服务端未开启 LFS（HTTP 404）", 404
+                    "LFS 返回 404（工程未启用 LFS、无权访问，或请求未带对象）："
+                    f"{detail}",
+                    404,
                 ) from None
-            raise GitLabError(f"LFS 请求失败（HTTP {e.code}）", e.code) from None
+            raise GitLabError(
+                f"LFS 请求失败（HTTP {e.code}）：{detail}", e.code
+            ) from None
         except (urllib.error.URLError, TimeoutError, ValueError) as e:
             reason = getattr(e, "reason", e)
             raise GitLabError(f"LFS 请求失败：{reason}") from None

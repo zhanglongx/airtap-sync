@@ -9,7 +9,7 @@ from enum import StrEnum
 from urllib.parse import urlparse
 
 from airtap_sync.gitlab.client import GitLabClient, GitLabError
-from airtap_sync.gitlab.lfs import LfsClient
+from airtap_sync.gitlab.lfs import LfsClient, LfsObject
 from airtap_sync.gitlab.projects import Project, current_user, list_projects
 from airtap_sync.gitsync.gitcmd import GitError, GitRunner
 
@@ -141,18 +141,17 @@ def _check_git(
         )
 
     host = urlparse(base_url).netloc
-    foreign = [
-        p.full_path
-        for p in projects[:50]
-        if p.http_url and urlparse(p.http_url).netloc != host
-    ]
-    if foreign:
+    reported = sorted(
+        {urlparse(p.http_url).netloc for p in projects[:50] if p.http_url} - {host}
+    )
+    if reported:
         results.append(
             CheckResult(
                 "external_url",
                 Status.WARN,
-                f"GitLab 报告的地址与配置的 {host} 不同（如 {foreign[0]}）。"
-                "程序用配置的地址访问，但 LFS 的上传下载地址由服务端决定，需确认可达",
+                f"GitLab 报告的地址是 {', '.join(reported)}，与配置的 {host} 不同。"
+                "代码访问用配置的地址；LFS 的上传下载地址由服务端决定，"
+                f"需确认 {reported[0]} 从本机可达",
             )
         )
     else:
@@ -163,12 +162,22 @@ def _check_git(
 
 
 def _check_lfs(projects: list[Project], lfs: LfsClient) -> CheckResult:
-    target = next((p for p in projects if p.lfs_enabled), None)
+    """Probe the Batch API on a project that really uses LFS, if there is one.
+
+    GitLab answers 404 to a batch request without objects, so the probe asks
+    for one made-up object; "object not found" for it proves the endpoint,
+    the authentication and the project's LFS access all work.
+    """
     name = "LFS 接口"
+    using = [p for p in projects if p.lfs_objects_size > 0]
+    target = using[0] if using else next((p for p in projects if p.lfs_enabled), None)
     if target is None:
         return CheckResult(name, Status.WARN, "没有启用 LFS 的工程，无法检测")
     try:
-        lfs.batch(target.full_path, "download", [])
+        lfs.batch(target.full_path, "download", [LfsObject("0" * 64, 1)])
     except GitLabError as e:
         return CheckResult(name, Status.FAIL, f"{target.full_path}: {e}")
-    return CheckResult(name, Status.OK, f"{target.full_path} 的 Batch 接口可用")
+    used = "使用 LFS 的工程" if using else "启用了 LFS 但尚无 LFS 数据的工程"
+    return CheckResult(
+        name, Status.OK, f"{target.full_path}（{used}）的 Batch 接口可用"
+    )

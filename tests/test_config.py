@@ -170,3 +170,21 @@ def test_malformed_toml(tmp_path: Path) -> None:
     file.write_text("side = ", encoding="utf-8")
     with pytest.raises(ConfigError, match="格式错误"):
         load_config(file)
+
+
+def test_paths_expand_user_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("AIRTAP_TEST_DIR", str(tmp_path / "data"))
+    config = parse_config(
+        {
+            **MINIMAL,
+            "folders": {"docs": {"path": "$AIRTAP_TEST_DIR/docs"}},
+            "gitlab": {"url": "http://g", "cache": {"dir": "~/.airtap-cache"}},
+        }
+    )
+    assert config.gitlab is not None
+    assert config.gitlab.cache.dir == tmp_path / ".airtap-cache"
+    assert config.folders["docs"].path == tmp_path / "data" / "docs"

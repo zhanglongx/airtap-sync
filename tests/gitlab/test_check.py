@@ -46,6 +46,15 @@ def test_all_checks_pass(fake_gitlab: FakeGitLab, populated: dict[str, Remote]) 
     assert "13.1.3-ee" in results["GitLab 版本"].detail
     assert "2 个工程" in results["列出工程"].detail
     assert results["LFS 接口"].detail.startswith("team/")
+    assert "尚无 LFS 数据" in results["LFS 接口"].detail
+
+
+def test_lfs_probe_prefers_a_project_that_uses_lfs(
+    fake_gitlab: FakeGitLab, populated: dict[str, Remote]
+) -> None:
+    fake_gitlab.projects[1]["statistics"]["lfs_objects_size"] = 123
+    detail = checks(fake_gitlab, populated)["LFS 接口"].detail
+    assert detail.startswith("team/b（使用 LFS 的工程）")
 
 
 def test_bad_token_stops_early(
@@ -86,7 +95,9 @@ def test_foreign_external_url_warns(
     fake_gitlab: FakeGitLab, populated: dict[str, Remote]
 ) -> None:
     fake_gitlab.projects[0]["http_url_to_repo"] = "http://other-host/team/a.git"
-    assert checks(fake_gitlab, populated)["external_url"].status is Status.WARN
+    result = checks(fake_gitlab, populated)["external_url"]
+    assert result.status is Status.WARN
+    assert "other-host" in result.detail
 
 
 def test_lfs_batch_roundtrip_and_errors(fake_gitlab: FakeGitLab) -> None:

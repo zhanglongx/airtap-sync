@@ -237,6 +237,8 @@ class FakeGitLab:
             fake.requests.append(("LFS", self.path))
             if not self.headers.get("Authorization", "").startswith("Basic "):
                 return self._send(401, {"message": "no auth"})
+            if not body.get("objects"):  # real GitLab answers 404 to an empty batch
+                return self._send(404, {"message": "Not Found"})
             project = self.path.removesuffix(".git/info/lfs/objects/batch").strip("/")
             if not any(
                 p["path_with_namespace"] == project and p.get("lfs_enabled")
