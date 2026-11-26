@@ -16,6 +16,6 @@ def test_relay_example_config_is_valid() -> None:
     assert config.relay is not None
     assert config.relay.url_a == "http://gitlab-a.example.com"
     assert config.relay.url_b == "http://gitlab-b.example.com"
-    assert config.relay.template.cache.dir.name == "airtap-relay-cache"
+    assert str(config.relay.template.cache.dir).endswith("airtap-relay-cache")
     assert config.safety.max_deletions == 20
     assert config.gitlab is None and not config.folders  # relay-only machine
