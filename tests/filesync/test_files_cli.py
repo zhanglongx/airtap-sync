@@ -21,7 +21,7 @@ def machines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         path = tmp_path / f"config-{side}.toml"
         path.write_text(
             f'side = "{side}"\npair_id = "pair-1"\n[transfer]\nreserve_free = 0\n'
-            f'[folders.docs]\npath = "{data}"\nignore = ["*.log"]\n',
+            f'[folders.docs]\npath = "{data.as_posix()}"\nignore = ["*.log"]\n',
             encoding="utf-8",
         )
         return path

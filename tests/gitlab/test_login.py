@@ -18,7 +18,7 @@ def setup(
     config = tmp_path / "config.toml"
     config.write_text(
         f'side = "A"\npair_id = "p"\n[gitlab]\nurl = "{fake_gitlab.url}"\n'
-        f'[gitlab.cache]\ndir = "{tmp_path / "cache"}"\n',
+        f'[gitlab.cache]\ndir = "{(tmp_path / "cache").as_posix()}"\n',
         encoding="utf-8",
     )
     store = FileTokenStore(tmp_path / "tok.json")

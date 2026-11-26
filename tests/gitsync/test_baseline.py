@@ -126,7 +126,7 @@ def env(
         path = tmp_path / f"config-{side}.toml"
         path.write_text(
             f'side = "{side}"\npair_id = "p"\n[gitlab]\nurl = "{fake_gitlab.url}"\n'
-            f'[gitlab.cache]\ndir = "{tmp_path / ("cache" + side)}"\n',
+            f'[gitlab.cache]\ndir = "{(tmp_path / ("cache" + side)).as_posix()}"\n',
             encoding="utf-8",
         )
         return path

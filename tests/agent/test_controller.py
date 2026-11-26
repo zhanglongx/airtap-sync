@@ -56,7 +56,7 @@ class Rig:
         self.config_path.write_text(
             'side = "A"\npair_id = "pair-1"\n'
             f"[agent]\nauto_sync = {str(auto_sync).lower()}\n"
-            f'[folders.docs]\npath = "{self.tmp_path}"\n',
+            f'[folders.docs]\npath = "{self.tmp_path.as_posix()}"\n',
             encoding="utf-8",
         )
 

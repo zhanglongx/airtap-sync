@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from airtap_sync.gitsync.cache import RepoCache, repo_key
+from airtap_sync.gitsync.cache import RepoCache, remove_tree, repo_key
 from airtap_sync.gitsync.gitcmd import GitError, GitRunner
 from tests.gitsync.gitrepo import Remote
 
@@ -128,9 +128,7 @@ def test_reconcile_after_crash(tmp_path: Path) -> None:
     orphan = root / "deadbeefdeadbeef0000.git"
     orphan.mkdir()
     (root / "tmp" / "x").mkdir(parents=True)
-    import shutil
-
-    shutil.rmtree(root / f"{repo_key('g/r')}.git")  # index row without directory
+    remove_tree(root / f"{repo_key('g/r')}.git")  # index row without directory
 
     cache = RepoCache(root, BIG, GitRunner())
     assert not orphan.exists()

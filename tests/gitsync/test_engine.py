@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from airtap_sync.config import SafetyConfig, TransferConfig
+from airtap_sync.gitsync.cache import remove_tree
 from airtap_sync.gitsync.engine import GitSyncAborted
 from airtap_sync.gitsync.report import render_markdown
 from airtap_sync.medium.outbox import FORMAT_VERSION
@@ -185,9 +186,7 @@ def test_missing_prerequisites_trigger_a_full_bundle(sites: Sites) -> None:
     # B lost its data (restored from an older backup) but A still assumes the baseline.
     b = sites["B"]
     b.remotes.pop("team/app")
-    import shutil
-
-    shutil.rmtree(b.root / "repos")
+    remove_tree(b.root / "repos")
     b.ctx.cache.clear()
     b.ctx.state.clear()
     tip = a.commit("f", "2")

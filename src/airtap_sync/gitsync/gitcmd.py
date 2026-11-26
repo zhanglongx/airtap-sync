@@ -29,6 +29,11 @@ FETCH_REFSPECS = (
 RefMap = dict[str, str]  # full ref name -> object id
 
 
+def _decode(data: bytes) -> str:
+    """Decode git output like text mode would: UTF-8, universal newlines."""
+    return data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 class GitError(Exception):
     """A git command failed."""
 
@@ -106,19 +111,21 @@ class GitRunner:
     ) -> subprocess.CompletedProcess[str]:
         cmd = [self.git, *args]
         log.debug("git %s", " ".join(args))
+        # Bytes in and out: text mode would turn the "\n" of ``input_text`` into
+        # "\r\n" on Windows, which git's line-based stdin commands reject.
         try:
-            proc = subprocess.run(
+            raw = subprocess.run(
                 cmd,
                 cwd=cwd,
                 env=self._env(extra_env),
                 capture_output=True,
-                input=input_text,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                input=None if input_text is None else input_text.encode("utf-8"),
             )
         except FileNotFoundError:
             raise GitError("找不到 git，请先安装 Git 并加入 PATH") from None
+        proc = subprocess.CompletedProcess(
+            raw.args, raw.returncode, _decode(raw.stdout), _decode(raw.stderr)
+        )
         if check and proc.returncode != 0:
             detail = proc.stderr.strip() or proc.stdout.strip()
             raise GitError(

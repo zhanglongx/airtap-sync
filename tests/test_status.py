@@ -79,8 +79,9 @@ def test_status_command(
     write(data, "a.txt", "alpha")
     config = tmp_path / "config.toml"
     config.write_text(
-        f'side = "A"\npair_id = "p"\n[folders.docs]\npath = "{data}"\n'
-        f'[gitlab]\nurl = "http://g"\n[gitlab.cache]\ndir = "{tmp_path / "c"}"\n',
+        f'side = "A"\npair_id = "p"\n[folders.docs]\npath = "{data.as_posix()}"\n'
+        '[gitlab]\nurl = "http://g"\n'
+        f'[gitlab.cache]\ndir = "{(tmp_path / "c").as_posix()}"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(paths, "state_dir", lambda: tmp_path / "state")

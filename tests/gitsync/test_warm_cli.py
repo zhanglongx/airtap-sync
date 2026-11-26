@@ -22,7 +22,7 @@ def env(
     config.write_text(
         f'side = "A"\npair_id = "p"\n[gitlab]\nurl = "{fake_gitlab.url}"\n'
         'exclude_projects = ["sandbox/*"]\n'
-        f'[gitlab.cache]\ndir = "{tmp_path / "cache"}"\n',
+        f'[gitlab.cache]\ndir = "{(tmp_path / "cache").as_posix()}"\n',
         encoding="utf-8",
     )
     store = FileTokenStore(tmp_path / "tok.json")

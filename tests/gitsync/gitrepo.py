@@ -50,7 +50,8 @@ class Remote:
             git("checkout", "-q", "-B", branch, f"origin/{branch}", cwd=self.work)
         else:
             git("checkout", "-q", "-B", branch, cwd=self.work)
-        (self.work / filename).write_text(content, encoding="utf-8")
+        # newline="": keep "\n" as is on Windows, so LFS pointers stay byte-exact
+        (self.work / filename).write_text(content, encoding="utf-8", newline="")
         git("add", filename, cwd=self.work)
         git("commit", "-q", "-m", f"{filename}: {content}", cwd=self.work)
         git("push", "-q", "origin", branch, cwd=self.work)

@@ -18,8 +18,9 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from airtap_sync.gitsync.gitcmd import GitRunner
@@ -43,6 +44,21 @@ CREATE TABLE IF NOT EXISTS repos (
 def repo_key(full_path: str) -> str:
     """Directory name for a project: short hash, safe on every filesystem."""
     return hashlib.sha256(full_path.lower().encode("utf-8")).hexdigest()[:20]
+
+
+def remove_tree(path: Path) -> None:
+    """Delete a directory tree, best effort.
+
+    Git marks object and pack files read-only, which on Windows makes a plain
+    ``shutil.rmtree`` fail; clear the flag and retry.
+    """
+
+    def retry(func: Callable[[str], object], name: str, _exc: BaseException) -> None:
+        with contextlib.suppress(OSError):
+            os.chmod(name, stat.S_IWRITE)
+            func(name)
+
+    shutil.rmtree(path, onexc=retry)
 
 
 def dir_size(path: Path) -> int:
@@ -78,14 +94,14 @@ class RepoCache:
 
     def _reconcile(self) -> None:
         """Make the index and the directory contents agree after a crash."""
-        shutil.rmtree(self.root / TMP_DIRNAME, ignore_errors=True)
+        remove_tree(self.root / TMP_DIRNAME)
         known = {row[0] for row in self._db.execute("SELECT key FROM repos")}
         on_disk = {p.name[:-4] for p in self.root.glob("*.git") if p.is_dir()}
         for key in known - on_disk:
             self._db.execute("DELETE FROM repos WHERE key = ?", (key,))
         for key in on_disk - known:
             log.warning("removing cache directory %s.git not in the index", key)
-            shutil.rmtree(self.root / f"{key}.git", ignore_errors=True)
+            remove_tree(self.root / f"{key}.git")
         self._db.commit()
 
     def contains(self, full_path: str) -> bool:
@@ -115,7 +131,7 @@ class RepoCache:
             if key in self._pinned:
                 continue
             log.info("evicting %s (%d bytes) from the cache", path, size)
-            shutil.rmtree(self.root / f"{key}.git", ignore_errors=True)
+            remove_tree(self.root / f"{key}.git")
             self._db.execute("DELETE FROM repos WHERE key = ?", (key,))
             self._db.commit()
             return True
@@ -148,7 +164,7 @@ class RepoCache:
         repo = self.root / f"{key}.git"
         if not self.contains(full_path):
             self.make_room(estimated_size)
-            shutil.rmtree(repo, ignore_errors=True)
+            remove_tree(repo)
         self._pinned.add(key)
         try:
             if not (repo / "HEAD").exists():
@@ -157,7 +173,7 @@ class RepoCache:
                 self.runner.fetch_local(repo, url)
             except BaseException:
                 if not self.contains(full_path):
-                    shutil.rmtree(repo, ignore_errors=True)
+                    remove_tree(repo)
                 raise
             self._record(key, full_path, dir_size(repo))
             yield repo
@@ -170,13 +186,13 @@ class RepoCache:
     @contextlib.contextmanager
     def _open_temporary(self, full_path: str, url: str) -> Iterator[Path]:
         tmp = self.root / TMP_DIRNAME / repo_key(full_path)
-        shutil.rmtree(tmp, ignore_errors=True)
+        remove_tree(tmp)
         try:
             self.runner.init_bare(tmp)
             self.runner.fetch_local(tmp, url)
             yield tmp
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            remove_tree(tmp)
 
     def _record(self, key: str, full_path: str, size: int) -> None:
         self._db.execute(
@@ -189,13 +205,13 @@ class RepoCache:
 
     def remove(self, full_path: str) -> None:
         key = repo_key(full_path)
-        shutil.rmtree(self.root / f"{key}.git", ignore_errors=True)
+        remove_tree(self.root / f"{key}.git")
         self._db.execute("DELETE FROM repos WHERE key = ?", (key,))
         self._db.commit()
 
     def clear(self) -> None:
         """Drop every cached repository (used by ``git reset``)."""
         for (key,) in self._db.execute("SELECT key FROM repos").fetchall():
-            shutil.rmtree(self.root / f"{key}.git", ignore_errors=True)
+            remove_tree(self.root / f"{key}.git")
         self._db.execute("DELETE FROM repos")
         self._db.commit()

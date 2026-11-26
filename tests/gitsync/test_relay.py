@@ -291,7 +291,7 @@ def relay_config(tmp_path: Path, a: FakeGitLab, b: FakeGitLab) -> Path:
     path = tmp_path / "relay.toml"
     path.write_text(
         f'[relay]\nurl_a = "{a.url}"\nurl_b = "{b.url}"\n'
-        f'[relay.cache]\ndir = "{tmp_path / "cache"}"\n',
+        f'[relay.cache]\ndir = "{(tmp_path / "cache").as_posix()}"\n',
         encoding="utf-8",
     )
     return path

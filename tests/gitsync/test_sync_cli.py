@@ -45,7 +45,7 @@ class Env:
                 f'side = "{side}"\npair_id = "pair-1"\n'
                 f"[transfer]\nreserve_free = 0\n"
                 f'[gitlab]\nurl = "{gitlab.url}"\n'
-                f'[gitlab.cache]\ndir = "{tmp_path / ("cache" + side)}"\n',
+                f'[gitlab.cache]\ndir = "{(tmp_path / ("cache" + side)).as_posix()}"\n',
                 encoding="utf-8",
             )
             self.configs[side] = config
@@ -183,7 +183,7 @@ def test_files_and_git_are_synchronised_in_one_run(
         data = env.tmp_path / f"data-{side}"
         data.mkdir()
         with env.configs[side].open("a", encoding="utf-8") as f:
-            f.write(f'\n[folders.docs]\npath = "{data}"\n')
+            f.write(f'\n[folders.docs]\npath = "{data.as_posix()}"\n')
     env.add_project("A", "team/app").commit("f", "1")
     (env.tmp_path / "data-A" / "note.txt").write_text("hello", encoding="utf-8")
 
@@ -208,7 +208,7 @@ def test_only_files_keeps_the_git_manifest(
     data = env.tmp_path / "data-A"
     data.mkdir()
     with env.configs["A"].open("a", encoding="utf-8") as f:
-        f.write(f'\n[folders.docs]\npath = "{data}"\n')
+        f.write(f'\n[folders.docs]\npath = "{data.as_posix()}"\n')
     env.add_project("A", "team/app").commit("f", "1")
     usb = str(env.usb)
     assert env.run("A", "sync", "--usb", usb) in (EXIT_OK, EXIT_ATTENTION)
