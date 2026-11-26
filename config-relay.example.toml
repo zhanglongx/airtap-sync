@@ -1,0 +1,41 @@
+# airtap-sync 跨网电脑（relay）配置示例
+#
+# 用在一台能同时访问网络 A 和网络 B 的电脑上：直接在两个 GitLab 之间同步 Git，
+# 不经过 U 盘。只同步 Git；目录同步仍然走 U 盘（普通的 config.toml）。
+#
+# 用法（配置文件用 --config 指定，也可以放在默认位置）：
+#   airtap-sync --config config-relay.toml gitlab login     # 依次输入两个 GitLab 的令牌
+#   airtap-sync --config config-relay.toml relay --dry-run  # 先看会发生什么，不做改动
+#   airtap-sync --config config-relay.toml relay
+#   airtap-sync --config config-relay.toml relay --confirm-deletes   # 确认超过阈值的删除/新建
+#
+# 这台电脑不需要 side、pair_id，也不需要 [gitlab]、[folders.*]。
+# 路径里的 ~ 和环境变量会被展开；路径含反斜杠时请用单引号。
+
+[relay]
+url_a = "http://gitlab-a.example.com"   # 网络 A 的 GitLab，不要带结尾的 /
+url_b = "http://gitlab-b.example.com"   # 网络 B 的 GitLab
+
+# 下面的筛选项两个 GitLab 共用，都是可选的。
+# include_projects = ["ZH/*"]           # 只同步这些工程（按完整路径的通配符，含子群组）；留空表示全部
+# exclude_projects = ["sandbox/*"]      # 不同步的工程；优先于 include_projects
+# include_branches = []                 # 只同步这些分支；留空表示全部
+# exclude_branches = ["wip/*"]          # 不同步的分支
+# ci_skip = true                        # 推送时附带 ci.skip，避免触发 CI（默认 true）
+# concurrency = 8                       # 并发读取工程分支的数量
+
+[relay.cache]                           # 两个方向共用同一份本地仓库缓存
+dir = 'D:\airtap-relay-cache'           # 必填
+max_size = "100GiB"                     # 超过后按最近最少使用淘汰
+
+[safety]                                # 防误删：超过阈值的操作先暂停，等你确认
+max_deletions = 20                      # 单个工程一次要删除的分支/tag 数；工程大量消失时也据此中止
+max_new_projects = 20                   # 一次要在对端新建的工程数
+
+# 提示：
+# - 令牌账号最好是两边都有管理员权限；不是管理员时，只能同步有推送权限的工程，
+#   无法在他人的个人命名空间下建工程（报告里会逐项提示）。
+# - 基准保存在这台电脑本地。relay 和 U 盘模式各自保存自己的基准，
+#   偶尔交替使用最坏只会让已删除的分支“复活”，不会丢失提交；不建议长期混用。
+# - 两个 GitLab 恢复自同一份备份时，先在这台电脑上运行一次 relay --dry-run 确认，
+#   再正式同步；也可以先用 gitlab check 检查其中一个（用 [gitlab] 配置）。

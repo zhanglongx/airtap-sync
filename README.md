@@ -149,7 +149,7 @@ airtap-sync autostart enable # 开机自动启动（disable 关闭，status 查�
 
 ### 跨网电脑模式（只同步 Git）
 
-如果有一台能同时访问两个网络的电脑，可以不经过 U 盘，直接在两个 GitLab 之间同步 Git：
+如果有一台能同时访问两个网络的电脑，可以不经过 U 盘，直接在两个 GitLab 之间同步 Git（完整的带注释示例见 [`config-relay.example.toml`](config-relay.example.toml)）：
 
 ```toml
 # relay.toml —— 这台电脑不需要 side、pair_id，也不需要 [gitlab]
