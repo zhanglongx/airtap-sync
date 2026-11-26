@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import shutil
 import subprocess
 from pathlib import Path
@@ -71,6 +72,30 @@ def test_the_spec_wires_the_icon_and_data() -> None:
     assert text.count("icon=exe_icon") == 2  # both executables
     assert "AIRTAP_ICON" in text and 'sys.platform == "win32"' in text
     assert "airtap_sync/assets" in text  # the PNG used at run time
+
+
+def test_build_succeeds_with_restricted_output_encoding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = load_script("build_exe")
+    output = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr("sys.stdout", output)
+    monkeypatch.setattr(build, "ROOT", tmp_path / "中文")
+    monkeypatch.setenv("TCL_LIBRARY", "obsolete")
+    monkeypatch.setattr(build, "_tk_works", lambda env: False)
+    monkeypatch.setattr(build.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build.shutil, "make_archive", lambda *args: "中文.zip")
+    monkeypatch.setattr(build, "version", lambda name: "0.1.0")
+    if build.sys.platform == "win32":
+        make_icon = load_script("make_icon")
+        monkeypatch.setattr(make_icon, "make_ico", lambda: tmp_path / "icon.ico")
+        monkeypatch.setitem(build.sys.modules, "make_icon", make_icon)
+
+    assert build.main() == 0
+    output.flush()
+    text = output.buffer.getvalue().decode("cp1252")
+    assert r"\u7a0b\u5e8f\u76ee\u5f55" in text
+    assert r"\u4e2d\u6587.zip" in text
 
 
 needs_make = pytest.mark.skipif(

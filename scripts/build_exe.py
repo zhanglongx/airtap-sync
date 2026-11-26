@@ -36,6 +36,9 @@ def _tk_works(env: dict[str, str]) -> bool:
 
 
 def main() -> int:
+    # A redirected Windows code page may not support the paths or messages.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     env = {k: v for k, v in os.environ.items() if k not in _TK_ENV}
     dropped = [k for k in _TK_ENV if k in os.environ]
     if dropped:
