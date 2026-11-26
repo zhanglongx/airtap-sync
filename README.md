@@ -218,7 +218,7 @@ B 上的改动要到第二天早上在 A 上插入 U 盘时才会到达 A，这�
 | `[safety]` | `max_deletions`、`max_new_projects`（默认 20）。 |
 | `[agent]` | `auto_sync`、`poll_seconds`。 |
 
-路径里的 `~` 和环境变量会被展开。令牌保存在系统凭据库（Windows 凭据管理器）；没有凭据库时保存在权限为 600 的文件里；也可以用环境变量 `AIRTAP_GITLAB_TOKEN`。
+路径里的 `~` 和环境变量会被展开：Windows 上 `'%APPDATA%\airtap-sync\docs'`、`'%USERPROFILE%\Documents'`（也可写成 `$APPDATA`、`${APPDATA}`），Linux 上 `'~/docs'`、`'$HOME/docs'`；含反斜杠的路径要用单引号（TOML 的字面量字符串）。引用了没有定义的环境变量会直接报错，不会创建一个名字里带 `%` 的目录。令牌保存在系统凭据库（Windows 凭据管理器）；没有凭据库时保存在权限为 600 的文件里；也可以用环境变量 `AIRTAP_GITLAB_TOKEN`。
 
 ## 常见问题
 

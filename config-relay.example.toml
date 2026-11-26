@@ -10,7 +10,8 @@
 #   airtap-sync --config config-relay.toml relay --confirm-deletes   # 确认超过阈值的删除/新建
 #
 # 这台电脑不需要 side、pair_id，也不需要 [gitlab]、[folders.*]。
-# 路径里的 ~ 和环境变量会被展开；路径含反斜杠时请用单引号。
+# 路径里的 ~ 和环境变量会被展开（Windows 上可写 '%APPDATA%\airtap-relay-cache'，
+# 也可以是 $APPDATA 或 ${APPDATA}）；没有定义的变量会报错。路径含反斜杠时请用单引号。
 
 [relay]
 url_a = "http://gitlab-a.example.com"   # 网络 A 的 GitLab，不要带结尾的 /

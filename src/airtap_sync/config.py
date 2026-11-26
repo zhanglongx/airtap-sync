@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -40,9 +40,37 @@ _FOLDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 MAX_CONCURRENCY = 64
 
 
-def user_path(value: str) -> Path:
+_WINDOWS_VAR = re.compile(r"%[^%\\/:*?\"<>|]+%")
+_SHELL_VAR = re.compile(r"\$\{[^}]+\}|\$\w+")
+
+
+def expand_text(
+    value: str,
+    key: str = "路径",
+    *,
+    expandvars: Callable[[str], str] = os.path.expandvars,
+    windows: bool | None = None,
+) -> str:
+    """Expand environment variables in a configured path.
+
+    On Windows ``%APPDATA%``, ``$APPDATA`` and ``${APPDATA}`` all work; elsewhere
+    the last two. A variable that is not defined is an error rather than being
+    kept literally, which would silently create a directory named ``%APPDATA%``.
+    """
+    windows = os.name == "nt" if windows is None else windows
+    expanded = expandvars(value)
+    unresolved = _SHELL_VAR.findall(expanded)
+    if windows:
+        unresolved += _WINDOWS_VAR.findall(expanded)
+    if unresolved:
+        names = "、".join(sorted(set(unresolved)))
+        raise ConfigError(f"{key}: 路径里的环境变量没有定义：{names}")
+    return expanded
+
+
+def user_path(value: str, key: str = "路径") -> Path:
     """A configured path with ``~`` and environment variables expanded."""
-    return Path(os.path.expandvars(value)).expanduser()
+    return Path(expand_text(value, key)).expanduser()
 
 
 class ConfigError(ValueError):
@@ -265,7 +293,7 @@ def _parse_folders(table: dict[str, Any]) -> dict[str, FolderConfig]:
             raise ConfigError(f"[{section}] path: 必须是非空字符串")
         folders[name] = FolderConfig(
             name=name,
-            path=user_path(path),
+            path=user_path(path, f"[{section}] path"),
             ignore=_pop_str_list(entry, "ignore", section),
         )
         _reject_unknown(entry, section)
@@ -295,7 +323,7 @@ def _parse_gitlab(table: dict[str, Any], section: str = "gitlab") -> GitLabConfi
     if not isinstance(cache_dir, str) or not cache_dir.strip():
         raise ConfigError(f"[{section}.cache] dir: 必须指定缓存目录")
     cache = GitLabCacheConfig(
-        dir=user_path(cache_dir),
+        dir=user_path(cache_dir, f"[{section}.cache] dir"),
         max_size=_pop_size(
             cache_table,
             "max_size",

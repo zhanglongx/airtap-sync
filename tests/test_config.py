@@ -205,3 +205,61 @@ def test_include_projects_option() -> None:
     assert config.gitlab is not None
     assert config.gitlab.include_projects == ("zh/*",)
     assert config.gitlab.exclude_projects == ("zh/tmp/*",)
+
+
+# ----- environment variables in paths ------------------------------------------------
+
+
+def test_windows_style_variables_are_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ntpath
+
+    from airtap_sync.config import expand_text
+
+    monkeypatch.setenv("APPDATA", r"C:\Users\zhlx\AppData\Roaming")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\zhlx")
+
+    def expand(text: str) -> str:
+        return expand_text(text, expandvars=ntpath.expandvars, windows=True)
+
+    assert expand(r"%APPDATA%\airtap-sync\docs") == (
+        r"C:\Users\zhlx\AppData\Roaming\airtap-sync\docs"
+    )
+    assert expand(r"%USERPROFILE%\Documents\%APPDATA%") == (
+        r"C:\Users\zhlx\Documents\C:\Users\zhlx\AppData\Roaming"
+    )
+    assert expand(r"$APPDATA\x") == r"C:\Users\zhlx\AppData\Roaming\x"
+    assert expand(r"${APPDATA}\x") == r"C:\Users\zhlx\AppData\Roaming\x"
+    assert expand(r"D:\plain\path") == r"D:\plain\path"
+
+
+def test_undefined_variables_are_an_error_not_a_literal_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ntpath
+
+    from airtap_sync.config import expand_text
+
+    monkeypatch.delenv("NOPE", raising=False)
+    with pytest.raises(ConfigError, match="%NOPE%"):
+        expand_text(r"%NOPE%\x", expandvars=ntpath.expandvars, windows=True)
+    with pytest.raises(ConfigError, match=r"\$NOPE"):
+        expand_text("$NOPE/x", windows=False)
+    with pytest.raises(ConfigError, match=r"\$\{NOPE\}"):
+        expand_text("${NOPE}/x", windows=False)
+    # Percent signs are ordinary characters outside Windows.
+    assert expand_text("/data/100%/x", windows=False) == "/data/100%/x"
+
+
+def test_undefined_variable_in_a_config_names_the_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AIRTAP_MISSING", raising=False)
+    with pytest.raises(ConfigError, match=r"\[folders.docs\] path.*AIRTAP_MISSING"):
+        parse_config({**MINIMAL, "folders": {"docs": {"path": "$AIRTAP_MISSING/docs"}}})
+    with pytest.raises(ConfigError, match=r"\[gitlab.cache\] dir"):
+        parse_config(
+            {
+                **MINIMAL,
+                "gitlab": {"url": "http://g", "cache": {"dir": "$AIRTAP_MISSING/c"}},
+            }
+        )
