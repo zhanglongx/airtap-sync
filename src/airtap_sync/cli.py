@@ -37,6 +37,7 @@ from airtap_sync.logs import setup_logging
 from airtap_sync.medium.outbox import FormatVersionError
 from airtap_sync.medium.volume import VolumeError, init_volume
 from airtap_sync.progress import ConsoleProgress, ProgressEvent, Stage
+from airtap_sync.status import render_status
 from airtap_sync.sync import SyncResult, SyncSetupError, execute_sync
 
 EXIT_OK = 0
@@ -90,7 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm-deletes", action="store_true", help="自动确认超过阈值的删除"
     )
 
-    add("status", "显示待同步的变化、上次同步时间和冲突", "M2")
+    p = add("status", "显示待同步的变化、上次同步时间和冲突副本（只读本地数据）", "M2")
+    p.set_defaults(handler=_status)
 
     p = add("relay", "跨网电脑模式：直接在两个 GitLab 之间同步 Git", "M4")
     p.add_argument("--dry-run", action="store_true", help="只显示将要执行的操作")
@@ -392,6 +394,13 @@ def _autostart(args: argparse.Namespace) -> int:
             print("开机自启本来就没有启用")
     else:
         print("已启用" if autostart.is_enabled() else "未启用")
+    return EXIT_OK
+
+
+def _status(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    for line in render_status(config, paths.state_dir(), paths.log_dir()):
+        print(line)
     return EXIT_OK
 
 

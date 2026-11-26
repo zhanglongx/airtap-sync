@@ -25,3 +25,4 @@
 - 修复打包：忽略指向已卸载 Python 的 `TCL_LIBRARY`/`TK_LIBRARY`；tkinter 不可用时自动从打包中排除；Windows 专用的隐藏导入只在 Windows 上添加
 - 新增 `Makefile`：`make` 一条命令完成打包（自动创建 .venv 并安装依赖），另有 `test`、`lint`、`format`、`check`、`icon`、`version`、`clean`、`distclean`、`help` 等目标；新增 `scripts/clean.py`、`scripts/make_icon.py`
 - 应用图标：`src/airtap_sync/assets/icon.png` 随包发布；打包时转成多尺寸 `.ico` 嵌入两个 Windows exe；托盘图标改用该图并在角上加状态色点，进度窗口也使用它；Linux 的开机自启条目引用该 PNG（ELF 可执行文件不能内嵌图标）
+- 新增 `status` 命令：只读本地数据，显示上次同步时间、各目录相对上次同步的本地改动（新增/修改/删除）、待处理的冲突副本，以及 Git 基准里已共有的工程数
