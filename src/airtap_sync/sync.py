@@ -45,6 +45,7 @@ class SyncResult:
     git: GitSyncReport | None = None
     files: FilesReport | None = None
     dry_run: bool = False
+    relay: bool = False
 
     @property
     def needs_attention(self) -> bool:
@@ -162,7 +163,8 @@ def run_sync(
 def render_sync_markdown(result: SyncResult, now: datetime | None = None) -> str:
     stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S UTC")
     title = "同步报告（试运行）" if result.dry_run else "同步报告"
-    lines = [f"# {title}", "", f"- 端：{result.side}", f"- 时间：{stamp}"]
+    who = "- 模式：中继（网络 A ⇄ 网络 B）" if result.relay else f"- 端：{result.side}"
+    lines = [f"# {title}", "", who, f"- 时间：{stamp}"]
     lines += [f"- {s}" for s in result.summaries()]
     lines.append("")
     if result.git is not None:
@@ -178,7 +180,8 @@ def write_sync_report(
 ) -> list[Path]:
     """Write the combined report into each directory; return the files written."""
     now = now or datetime.now(UTC)
-    name = f"{now.strftime('%Y%m%d-%H%M%S')}-{result.side}.md"
+    who = "relay" if result.relay else result.side
+    name = f"{now.strftime('%Y%m%d-%H%M%S')}-{who}.md"
     text = render_sync_markdown(result, now)
     written = []
     for directory in directories:

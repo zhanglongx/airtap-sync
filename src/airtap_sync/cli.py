@@ -31,6 +31,7 @@ from airtap_sync.gitsync.baseline import (
 from airtap_sync.gitsync.context import open_context
 from airtap_sync.gitsync.engine import GitSyncAborted
 from airtap_sync.gitsync.gitcmd import GitError
+from airtap_sync.gitsync.relay import Relay, RelayOptions, open_relay_context
 from airtap_sync.gitsync.scan import RemoteRefs
 from airtap_sync.gitsync.warm import warm_cache
 from airtap_sync.logs import setup_logging
@@ -38,7 +39,12 @@ from airtap_sync.medium.outbox import FormatVersionError
 from airtap_sync.medium.volume import VolumeError, init_volume
 from airtap_sync.progress import ConsoleProgress, ProgressEvent, Stage
 from airtap_sync.status import render_status
-from airtap_sync.sync import SyncResult, SyncSetupError, execute_sync
+from airtap_sync.sync import (
+    SyncResult,
+    SyncSetupError,
+    execute_sync,
+    write_sync_report,
+)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -95,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(handler=_status)
 
     p = add("relay", "跨网电脑模式：直接在两个 GitLab 之间同步 Git", "M4")
+    p.set_defaults(handler=_relay)
     p.add_argument("--dry-run", action="store_true", help="只显示将要执行的操作")
     p.add_argument(
         "--confirm-deletes", action="store_true", help="自动确认超过阈值的删除"
@@ -158,25 +165,30 @@ def _init_usb(args: argparse.Namespace) -> int:
 
 def _gitlab_login(args: argparse.Namespace) -> int:
     config = load_effective_config(args.config)
-    if config.gitlab is None:
-        raise ConfigError("config.toml 中没有 [gitlab] 配置")
-    url = config.gitlab.url
-    token = getpass.getpass(f"请输入 {url} 的访问令牌（需要 api 权限）：").strip()
-    if not token:
-        print("未输入令牌", file=sys.stderr)
-        return EXIT_ERROR
-    try:
-        user = current_user(GitLabClient(url, token))
-    except GitLabError as e:
-        print(f"令牌验证失败：{e}", file=sys.stderr)
-        return EXIT_ERROR
-    default_token_store().set(url, token)
-    print(f"已保存令牌：用户 {user.username}")
-    if not user.is_admin:
-        print(
-            "警告：该用户不是管理员，无法列出全部工程，也无法在个人命名空间下建工程",
-            file=sys.stderr,
-        )
+    urls: list[str] = []
+    if config.gitlab is not None:
+        urls.append(config.gitlab.url)
+    if config.relay is not None:
+        urls += [u for u in (config.relay.url_a, config.relay.url_b) if u not in urls]
+    if not urls:
+        raise ConfigError("config.toml 中没有 [gitlab] 或 [relay] 配置")
+    for url in urls:  # the relay needs a token for each of its two GitLabs
+        token = getpass.getpass(f"请输入 {url} 的访问令牌（需要 api 权限）：").strip()
+        if not token:
+            print("未输入令牌", file=sys.stderr)
+            return EXIT_ERROR
+        try:
+            user = current_user(GitLabClient(url, token))
+        except GitLabError as e:
+            print(f"令牌验证失败（{url}）：{e}", file=sys.stderr)
+            return EXIT_ERROR
+        default_token_store().set(url, token)
+        print(f"已保存 {url} 的令牌：用户 {user.username}")
+        if not user.is_admin:
+            print(
+                "警告：该用户不是管理员，无法列出全部工程，也无法在个人命名空间下建工程",
+                file=sys.stderr,
+            )
     return EXIT_OK
 
 
@@ -395,6 +407,45 @@ def _autostart(args: argparse.Namespace) -> int:
     else:
         print("已启用" if autostart.is_enabled() else "未启用")
     return EXIT_OK
+
+
+def _relay(args: argparse.Namespace) -> int:
+    config = load_effective_config(args.config)
+    if config.relay is None:
+        print("配置中没有 [relay]，无法使用跨网电脑模式", file=sys.stderr)
+        return EXIT_ERROR
+    ctx = open_relay_context(config)
+    confirm = args.confirm_deletes
+    try:
+        while True:
+            report = Relay(
+                ctx,
+                paths.staging_dir(),
+                RelayOptions(confirm=confirm, dry_run=args.dry_run),
+                ConsoleProgress(),
+            ).run()
+            result = SyncResult(
+                config.side, git=report, dry_run=args.dry_run, relay=True
+            )
+            if confirm or args.dry_run or not report.has_pending_confirmation:
+                break
+            confirm = _ask_confirmation(result)
+            if not confirm:
+                break
+    except GitSyncAborted as e:
+        print(f"同步中止：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    except (GitError, GitLabError) as e:
+        print(f"同步失败：{e}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        ctx.close()
+    files = write_sync_report(result, [paths.log_dir() / "reports"])
+    for line in result.summaries():
+        print(line)
+    if files:
+        print(f"报告：{files[-1]}")
+    return EXIT_ATTENTION if result.needs_attention else EXIT_OK
 
 
 def _status(args: argparse.Namespace) -> int:

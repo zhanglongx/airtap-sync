@@ -7,7 +7,7 @@
 
 每天早上在电脑 A 上插入 U 盘同步一次，再在电脑 B 上插入同一个 U 盘同步一次，两边就一致了。也可以让后台程序检测到 U 盘后自动完成。
 
-> 状态：目录同步、Git 同步（含 LFS）和后台常驻程序已完成；跨网电脑直连模式（`relay`）、`status` 命令尚未实现。详细设计见 `docs/development-plan.md`。
+> 状态：目录同步、Git 同步（含 LFS）、后台常驻程序、跨网电脑直连模式（`relay`）和 `status` 命令均已完成。详细设计见 `docs/development-plan.md`。
 
 ## 它是怎么工作的
 
@@ -147,6 +147,36 @@ airtap-sync autostart enable # 开机自动启动（disable 关闭，status 查�
 
 常驻后每 3 秒检查一次 U 盘，发现 `pair_id` 匹配的就自动同步，完成后通知“同步完成，可以拔出 U 盘”。托盘菜单：立即同步、打开最近报告、打开日志目录、暂停自动同步、退出。图标颜色：灰蓝=空闲，蓝=同步中，绿=成功，橙=有事项要处理，红=出错。配置里 `[agent] auto_sync = false` 则检测到 U 盘后先询问。配置文件改动不用重启。
 
+### 跨网电脑模式（只同步 Git）
+
+如果有一台能同时访问两个网络的电脑，可以不经过 U 盘，直接在两个 GitLab 之间同步 Git：
+
+```toml
+# relay.toml —— 这台电脑不需要 side、pair_id，也不需要 [gitlab]
+[relay]
+url_a = "http://gitlab-a.example.com"
+url_b = "http://gitlab-b.example.com"
+include_projects = ["ZH/*"]       # 筛选规则两边共用
+[relay.cache]
+dir = 'D:\airtap-relay-cache'
+```
+
+```bash
+airtap-sync --config relay.toml gitlab login   # 依次输入两个 GitLab 的令牌
+airtap-sync --config relay.toml relay --dry-run
+airtap-sync --config relay.toml relay
+```
+
+每个工程在同一个本地缓存里先把 B 的变化合并到 A，再把 A 的（更新后的）状态合并到 B；规则和 U 盘模式完全一样：只快进、分叉放到 `airtap/conflict/`、删除传播并备份、tag 冲突不覆盖，LFS 对象直接在两台服务器之间复制，超过阈值的删除和新建同样要确认。基准保存在这台电脑本地，所以 relay 和 U 盘模式交替使用时，最坏情况是某个已删除的分支被“复活”，不会丢失提交；不建议两种模式长期混用。
+
+### 查看状态
+
+```bash
+airtap-sync status    # 上次同步时间、各目录相对上次同步的本地改动、待处理的冲突副本
+```
+
+只读本地数据，不访问网络和 U 盘，随时可以运行。
+
 ### 每天的流程
 
 1. 电脑 A：插入 U 盘，等待“同步完成”，拔出。
@@ -183,6 +213,7 @@ B 上的改动要到第二天早上在 A 上插入 U 盘时才会到达 A，这�
 | `[transfer]` | `max_bytes`（单次最多写入 U 盘，默认 28GiB）、`reserve_free`（U 盘保留空间，默认 1GiB）、`part_size`（切片大小，默认 512MiB）。 |
 | `[folders.<名称>]` | `path`、`ignore`。默认已忽略 `.git/`、`~$*`、`*.tmp`、`Thumbs.db`、`desktop.ini`。 |
 | `[gitlab]` | `url`；`include_projects`、`exclude_projects`；`include_branches`、`exclude_branches`；`ci_skip`（默认 true，推送时附带 `ci.skip`）；`concurrency`。 |
+| `[relay]` | 跨网电脑模式：`url_a`、`url_b`，另外可用与 `[gitlab]` 相同的筛选项和 `[relay.cache]`。 |
 | `[gitlab.cache]` | `dir`（必填）、`max_size`（默认 100GiB，超出后按最近最少使用淘汰）。 |
 | `[safety]` | `max_deletions`、`max_new_projects`（默认 20）。 |
 | `[agent]` | `auto_sync`、`poll_seconds`。 |

@@ -26,3 +26,4 @@
 - 新增 `Makefile`：`make` 一条命令完成打包（自动创建 .venv 并安装依赖），另有 `test`、`lint`、`format`、`check`、`icon`、`version`、`clean`、`distclean`、`help` 等目标；新增 `scripts/clean.py`、`scripts/make_icon.py`
 - 应用图标：`src/airtap_sync/assets/icon.png` 随包发布；打包时转成多尺寸 `.ico` 嵌入两个 Windows exe；托盘图标改用该图并在角上加状态色点，进度窗口也使用它；Linux 的开机自启条目引用该 PNG（ELF 可执行文件不能内嵌图标）
 - 新增 `status` 命令：只读本地数据，显示上次同步时间、各目录相对上次同步的本地改动（新增/修改/删除）、待处理的冲突副本，以及 Git 基准里已共有的工程数
+- M4 跨网电脑模式 `airtap-sync relay`：在能同时访问两个 GitLab 的电脑上直接同步 Git（不经过 U 盘）；同一个缓存仓库先把 B 合并到 A、再把 A 合并到 B，沿用 U 盘模式的全部规则和防误删阈值，LFS 对象服务器之间直接复制；新增 `[relay]` 配置（无需 side 和 pair_id）、同时认证两个 GitLab 的 git 凭据、`gitlab login` 依次保存两个令牌；报告标注“中继”

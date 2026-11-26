@@ -49,7 +49,8 @@ def sync_project(
     create: bool,
     trash_stamp: str,
     confirmed: bool = False,
-    before_push: Callable[[str], None] | None = None,
+    before_push: Callable[[str, Path], None] | None = None,
+    import_peer: Callable[[Path], None] | None = None,
 ) -> ProjectSyncResult:
     """Bring one project in line with the peer's record.
 
@@ -86,8 +87,10 @@ def sync_project(
         with ctx.cache.open(local_path, url) as repo:
             if bundle is not None:
                 import_bundle(ctx.runner, repo, bundle)
+            if import_peer is not None:
+                import_peer(repo)  # e.g. fetch the peer's objects directly
             if before_push is not None:
-                before_push(local_path)  # e.g. upload LFS objects the refs need
+                before_push(local_path, repo)  # e.g. upload the LFS objects needed
             result.refs = sync_refs(
                 ctx.runner,
                 repo,

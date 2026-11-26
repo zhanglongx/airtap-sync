@@ -20,6 +20,7 @@ class ExportedBundle:
 @dataclass
 class GitSyncReport:
     side: Side
+    relay: bool = False  # produced by the relay rather than a USB sync
     created: list[str] = field(default_factory=list)
     updated: list[str] = field(default_factory=list)  # projects with ref changes
     refs_applied: int = 0
@@ -142,7 +143,9 @@ def body_lines(report: GitSyncReport, level: str = "##") -> list[str]:
 
 def render_markdown(report: GitSyncReport, now: datetime | None = None) -> str:
     stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S UTC")
-    title = "Git 同步报告（试运行）" if report.dry_run else "Git 同步报告"
+    title = "Git 同步报告" + ("（中继）" if report.relay else "")
+    if report.dry_run:
+        title += "（试运行）"
     lines = [f"# {title}", "", f"- 端：{report.side}", f"- 时间：{stamp}"]
     lines += [f"- 概要：{report.summary()}", ""]
     lines += body_lines(report)

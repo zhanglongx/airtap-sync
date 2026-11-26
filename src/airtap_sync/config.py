@@ -10,7 +10,7 @@ import os
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -105,6 +105,19 @@ class GitLabConfig:
 
 
 @dataclass(frozen=True)
+class RelayConfig:
+    """A machine that reaches both GitLabs and syncs Git directly (no USB drive)."""
+
+    url_a: str
+    url_b: str
+    # Everything but the address is shared by both sides (cache, filters, ...).
+    template: GitLabConfig
+
+    def gitlab_config(self, side: Side) -> GitLabConfig:
+        return replace(self.template, url=self.url_a if side == "A" else self.url_b)
+
+
+@dataclass(frozen=True)
 class SafetyConfig:
     max_deletions: int = 20
     max_new_projects: int = 20
@@ -118,6 +131,7 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     folders: Mapping[str, FolderConfig] = field(default_factory=dict)
     gitlab: GitLabConfig | None = None
+    relay: RelayConfig | None = None
     safety: SafetyConfig = field(default_factory=SafetyConfig)
 
     @property
@@ -140,10 +154,12 @@ def load_config(path: Path) -> Config:
 def parse_config(raw: Mapping[str, Any]) -> Config:
     """Validate an already-parsed TOML document."""
     data = dict(raw)
-    side = data.pop("side", None)
+    # A relay machine has no side and no USB drive of its own.
+    relay_only = "relay" in data and "side" not in data and "pair_id" not in data
+    side = data.pop("side", "A" if relay_only else None)
     if side not in ("A", "B"):
         raise ConfigError(f'side: 必须是 "A" 或 "B"，当前为 {side!r}')
-    pair_id = data.pop("pair_id", None)
+    pair_id = data.pop("pair_id", "relay" if relay_only else None)
     if not isinstance(pair_id, str) or not pair_id.strip():
         raise ConfigError("pair_id: 必须是非空字符串（与 U 盘 volume.toml 中的一致）")
 
@@ -154,6 +170,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
         agent=_parse_agent(_pop_table(data, "agent")),
         folders=_parse_folders(_pop_table(data, "folders")),
         gitlab=_parse_gitlab(_pop_table(data, "gitlab")) if "gitlab" in data else None,
+        relay=_parse_relay(_pop_table(data, "relay")) if "relay" in data else None,
         safety=_parse_safety(_pop_table(data, "safety")),
     )
     _reject_unknown(data, "")
@@ -255,40 +272,53 @@ def _parse_folders(table: dict[str, Any]) -> dict[str, FolderConfig]:
     return folders
 
 
-def _parse_gitlab(table: dict[str, Any]) -> GitLabConfig:
+def _parse_relay(table: dict[str, Any]) -> RelayConfig:
+    urls = {}
+    for key in ("url_a", "url_b"):
+        url = table.pop(key, None)
+        if not isinstance(url, str) or not re.match(r"^https?://\S+$", url):
+            raise ConfigError(f"[relay] {key}: 必须以 http:// 或 https:// 开头")
+        urls[key] = url.rstrip("/")
+    if urls["url_a"].lower() == urls["url_b"].lower():
+        raise ConfigError("[relay] url_a 和 url_b 不能相同")
+    template = _parse_gitlab({**table, "url": urls["url_a"]}, "relay")
+    return RelayConfig(urls["url_a"], urls["url_b"], template)
+
+
+def _parse_gitlab(table: dict[str, Any], section: str = "gitlab") -> GitLabConfig:
     url = table.pop("url", None)
     if not isinstance(url, str) or not re.match(r"^https?://\S+$", url):
-        raise ConfigError("[gitlab] url: 必须以 http:// 或 https:// 开头")
+        raise ConfigError(f"[{section}] url: 必须以 http:// 或 https:// 开头")
 
     cache_table = _pop_table(table, "cache")
     cache_dir = cache_table.pop("dir", None)
     if not isinstance(cache_dir, str) or not cache_dir.strip():
-        raise ConfigError("[gitlab.cache] dir: 必须指定缓存目录")
+        raise ConfigError(f"[{section}.cache] dir: 必须指定缓存目录")
     cache = GitLabCacheConfig(
         dir=user_path(cache_dir),
         max_size=_pop_size(
             cache_table,
             "max_size",
             GitLabCacheConfig.max_size,
-            "gitlab.cache",
+            f"{section}.cache",
             positive=True,
         ),
     )
-    _reject_unknown(cache_table, "gitlab.cache")
+    _reject_unknown(cache_table, f"{section}.cache")
 
     result = GitLabConfig(
         url=url.rstrip("/"),
         cache=cache,
-        include_projects=_pop_str_list(table, "include_projects", "gitlab"),
-        exclude_projects=_pop_str_list(table, "exclude_projects", "gitlab"),
-        include_branches=_pop_str_list(table, "include_branches", "gitlab"),
-        exclude_branches=_pop_str_list(table, "exclude_branches", "gitlab"),
-        ci_skip=_pop_bool(table, "ci_skip", True, "gitlab"),
-        concurrency=_pop_int(table, "concurrency", 8, "gitlab", minimum=1),
+        include_projects=_pop_str_list(table, "include_projects", section),
+        exclude_projects=_pop_str_list(table, "exclude_projects", section),
+        include_branches=_pop_str_list(table, "include_branches", section),
+        exclude_branches=_pop_str_list(table, "exclude_branches", section),
+        ci_skip=_pop_bool(table, "ci_skip", True, section),
+        concurrency=_pop_int(table, "concurrency", 8, section, minimum=1),
     )
     if result.concurrency > MAX_CONCURRENCY:
-        raise ConfigError(f"[gitlab] concurrency: 不能超过 {MAX_CONCURRENCY}")
-    _reject_unknown(table, "gitlab")
+        raise ConfigError(f"[{section}] concurrency: 不能超过 {MAX_CONCURRENCY}")
+    _reject_unknown(table, section)
     return result
 
 

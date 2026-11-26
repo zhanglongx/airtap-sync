@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from airtap_sync import __version__, paths
-from airtap_sync.cli import EXIT_NOT_IMPLEMENTED, build_parser, main
+from airtap_sync.cli import build_parser, main
 from airtap_sync.logs import setup_logging
 
 
@@ -15,19 +15,6 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--version"])
     assert exc.value.code == 0
     assert __version__ in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["relay"],
-    ],
-)
-def test_commands_registered_but_not_implemented(
-    argv: list[str], capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert main(argv) == EXIT_NOT_IMPLEMENTED
-    assert "尚未实现" in capsys.readouterr().err
 
 
 def test_command_required() -> None:

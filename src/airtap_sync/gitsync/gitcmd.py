@@ -45,23 +45,42 @@ class GitAuth:
     token: str
     username: str = "airtap-sync"
 
-    def env(self) -> dict[str, str]:
+    def entries(self) -> list[tuple[str, str]]:
+        """The ``git config`` settings (key, value) that authenticate this URL."""
         basic = base64.b64encode(f"{self.username}:{self.token}".encode()).decode()
         scope = f"http.{self.base_url.rstrip('/')}/"
-        return {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": f"{scope}.extraHeader",
-            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
+        return [
+            (f"{scope}.extraHeader", f"Authorization: Basic {basic}"),
             # GitLab is on the internal network; bypass any configured proxy.
-            "GIT_CONFIG_KEY_1": f"{scope}.proxy",
-            "GIT_CONFIG_VALUE_1": "",
-        }
+            (f"{scope}.proxy", ""),
+        ]
+
+    def env(self) -> dict[str, str]:
+        return CombinedAuth([self]).env()
+
+
+@dataclass(frozen=True)
+class CombinedAuth:
+    """Credentials for several GitLabs at once (the relay talks to two)."""
+
+    auths: Sequence[GitAuth]
+
+    def env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        entries = [e for auth in self.auths for e in auth.entries()]
+        for i, (key, value) in enumerate(entries):
+            env[f"GIT_CONFIG_KEY_{i}"] = key
+            env[f"GIT_CONFIG_VALUE_{i}"] = value
+        env["GIT_CONFIG_COUNT"] = str(len(entries))
+        return env
 
 
 class GitRunner:
     """Runs git commands with a fixed environment."""
 
-    def __init__(self, auth: GitAuth | None = None, git: str = "git") -> None:
+    def __init__(
+        self, auth: GitAuth | CombinedAuth | None = None, git: str = "git"
+    ) -> None:
         self.git = git
         self.auth = auth
 

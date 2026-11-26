@@ -20,6 +20,11 @@ PEER_REFSPECS = (
     f"+{LOCAL_PREFIX}heads/*:{PEER_PREFIX}heads/*",
     f"+{LOCAL_PREFIX}tags/*:{PEER_PREFIX}tags/*",
 )
+# Refspecs for fetching the peer's refs straight from its GitLab (relay mode).
+DIRECT_PEER_REFSPECS = (
+    f"+refs/heads/*:{PEER_PREFIX}heads/*",
+    f"+refs/tags/*:{PEER_PREFIX}tags/*",
+)
 _OID_RE = re.compile(r"\b[0-9a-f]{40}\b|\b[0-9a-f]{64}\b")
 
 

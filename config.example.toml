@@ -36,6 +36,17 @@ max_size = "100GiB"               # 缓存上限，超过后按最近最少使�
 max_deletions = 20                # 一次删除分支/tag 超过此数量时，转人工确认
 max_new_projects = 20             # 一次新建工程超过此数量时，转人工确认
 
+# 跨网电脑模式（airtap-sync relay）：在能同时访问两个网络的电脑上，直接在两个
+# GitLab 之间同步 Git，不经过 U 盘。这台电脑可以没有 side、pair_id 和 [gitlab]。
+# 两个地址都要用 airtap-sync gitlab login 保存令牌；筛选规则两边共用。
+# [relay]
+# url_a = "http://gitlab-a.example.com"
+# url_b = "http://gitlab-b.example.com"
+# include_projects = ["ZH/*"]
+# [relay.cache]
+# dir = 'D:\airtap-relay-cache'
+# max_size = "100GiB"
+
 # 目录同步：每个 [folders.<名称>] 是一对要同步的目录，两端用相同的名称。
 # 默认已忽略 .git/、~$*、*.tmp、Thumbs.db、desktop.ini；ignore 是额外的规则
 # （gitignore 语法，两端规则取并集）。

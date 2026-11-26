@@ -46,9 +46,10 @@ from airtap_sync.gitsync.projectplan import (
     plan_projects,
 )
 from airtap_sync.gitsync.projectsync import sync_project
-from airtap_sync.gitsync.refs import ActionKind, needs_import
+from airtap_sync.gitsync.refs import needs_import
 from airtap_sync.gitsync.refsync import export_bundle, read_local_refs
 from airtap_sync.gitsync.report import ExportedBundle, GitSyncReport
+from airtap_sync.gitsync.resultreport import record_result
 from airtap_sync.gitsync.transport import GIT_MANIFEST, bundle_base
 from airtap_sync.medium.atomicio import sha256_file
 from airtap_sync.medium.blobs import blob_base, drop_unwanted_blobs
@@ -366,7 +367,7 @@ class GitSync:
                 return  # waiting for LFS data, or the server was unreachable
             uploads = prepared
 
-        def upload_lfs(project_path: str) -> None:
+        def upload_lfs(project_path: str, _repo: Path) -> None:
             assert self.ctx.lfs is not None
             for obj, path in uploads:
                 self.ctx.lfs.upload(project_path, obj, path)
@@ -393,37 +394,14 @@ class GitSync:
             for _obj, path in uploads:
                 path.unlink(missing_ok=True)
 
-        if result.error:
-            self.report.failures.append(f"{result.path}：{result.error}")
+        if not record_result(self.report, result):
             return
-        self.report.warnings += [f"{result.path}：{n}" for n in result.notes]
         if result.created:
-            self.report.created.append(result.path)
             self.created.add(d.key)
             if result.project_id is not None:
                 self.new_local_ids[result.project_id] = result.path
         refs = result.refs
         assert refs is not None
-        if refs.applied or result.created:
-            self.report.updated.append(result.path)
-        self.report.refs_applied += len(refs.applied)
-        self.report.refs_deleted += [
-            f"{result.path}: {a.ref}"
-            for a in refs.applied
-            if a.kind is ActionKind.DELETE
-        ]
-        self.report.refs_deleted += [f"{result.path}: {r}" for r in refs.cleaned]
-        for a in refs.conflicts:
-            self.report.conflicts.append(f"{result.path}: {a.ref}（{a.note}）")
-        self.report.deferred += [
-            f"{result.path}: {a.ref}（{a.note}）" for a in refs.deferred
-        ]
-        self.report.pending_deletes += [
-            f"{result.path}: {a.ref}" for a in refs.pending_deletes
-        ]
-        self.report.failures += [
-            f"{result.path}: {r}：{why}" for r, why in refs.failed.items()
-        ]
         # Keep the local record in step with what the manifest should now say.
         record = self.local_records.get(d.key)
         if record is None and result.created:
